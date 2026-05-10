@@ -1,0 +1,2065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NEXUS TRADER — AI-Powered Crypto Bot</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#03060D;font-family:'Exo 2',sans-serif;font-size:16px;-webkit-tap-highlight-color:transparent}
+    input,button,select,textarea{font-size:15px!important;font-family:inherit}
+    ::-webkit-scrollbar{width:5px;height:5px}
+    ::-webkit-scrollbar-track{background:#080E1A}
+    ::-webkit-scrollbar-thumb{background:#0F2040;border-radius:3px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @keyframes pglow{0%,100%{box-shadow:0 0 4px #00FF88}50%{box-shadow:0 0 14px #00FF88,0 0 28px #00FF8844}}
+    @keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+    .fi{animation:fadein .3s ease both}
+    .spin{animation:spin 1s linear infinite;display:inline-block}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  firebase.initializeApp({
+    apiKey:"AIzaSyCfIqUvi5YSeYQJOcZa_mXkDbL2zqgxPTI",
+    authDomain:"crypto-trading-bot-1481a.firebaseapp.com",
+    projectId:"crypto-trading-bot-1481a",
+    storageBucket:"crypto-trading-bot-1481a.firebasestorage.app",
+    messagingSenderId:"855647711735",
+    appId:"1:855647711735:web:cd2e82f254bba48259fef2",
+    measurementId:"G-SELH946F21"
+  });
+  const auth=firebase.auth();
+  const db=firebase.firestore();
+</script>
+<script type="text/babel">
+  const {useState,useEffect,useRef,useCallback}=React;
+
+  const C={
+    bg:'#03060D',surface:'#080E1A',card:'#0B1220',
+    border:'#0F2040',borderBright:'#1A3A60',
+    accent:'#00CFFF',green:'#00FF88',red:'#FF2D55',
+    gold:'#FFB800',purple:'#9B5CFF',
+    text:'#C8E8FF',muted:'#3A5878',faint:'#1A3050',white:'#E8F4FF',
+  };
+
+  const PLANS={
+    free: {name:'Free', price:0,    color:C.muted,  signals:3,   autoTrade:false,exchanges:0,history:'24h', refRate:5},
+    pro:  {name:'Pro',  price:999,  color:C.accent, signals:999, autoTrade:true, exchanges:1,history:'30d', refRate:10},
+    vip:  {name:'VIP',  price:2499, color:C.gold,   signals:999, autoTrade:true, exchanges:2,history:'90d', refRate:15},
+  };
+
+  const PAIRS=['BTC/USDT','ETH/USDT','BNB/USDT','SOL/USDT','XRP/USDT','ADA/USDT','DOGE/USDT','AVAX/USDT','MATIC/USDT','LINK/USDT'];
+
+  // ── Admin config — only this email gets admin access ─────────────────────
+  const ADMIN_EMAIL = 'samuelmburu753@gmail.com'; // ← your email
+
+  // ── Withdrawal fee tiers (charged to user, credited to owner) ─────────────
+  const getWithdrawFee = (amount) => {
+    if (amount <= 100)  return { rate: 0.05, label: '5%' };
+    if (amount <= 500)  return { rate: 0.10, label: '10%' };
+    return              { rate: 0.15, label: '15%' };
+  };
+  const OWNER_WALLET = 'TVmeVKvkYebBTh6EF66EBm2BoVqCwGbhL4'; // owner TRC20 — fees credited here
+
+  const MOCK_TRADES=[
+    {pair:'BTC/USDT',side:'BUY', entry:'67,240',exit:'68,100',pnl:'+12.50',pct:'+1.28%',time:'08:34',status:'Closed'},
+    {pair:'ETH/USDT',side:'SELL',entry:'3,520', exit:'3,490', pnl:'+8.50', pct:'+0.85%',time:'11:15',status:'Closed'},
+    {pair:'SOL/USDT',side:'BUY', entry:'142.30',exit:'145.80',pnl:'+24.00',pct:'+2.46%',time:'14:20',status:'Closed'},
+    {pair:'XRP/USDT',side:'BUY', entry:'0.5820',exit:'0.5910',pnl:'+9.00', pct:'+1.55%',time:'16:45',status:'Closed'},
+    {pair:'BNB/USDT',side:'BUY', entry:'598.10',exit:'Open',  pnl:'+3.20', pct:'+0.53%',time:'19:02',status:'Active'},
+  ];
+
+  const enc=(t,k)=>CryptoJS.AES.encrypt(t,k).toString();
+  const dec=(c,k)=>{try{return CryptoJS.AES.decrypt(c,k).toString(CryptoJS.enc.Utf8)}catch{return''}};
+
+  // ── UI Primitives ─────────────────────────────────────────────────────────
+  const font={fontFamily:"'Exo 2',sans-serif"};
+  const mono={fontFamily:"'Share Tech Mono',monospace"};
+  const orb ={fontFamily:"'Orbitron',sans-serif"};
+
+  const Box=({style,children,...r})=>(
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16,...style}}{...r}>{children}</div>
+  );
+  const Badge=({label,color})=>(
+    <span style={{background:`${color}22`,color,border:`1px solid ${color}44`,borderRadius:6,
+      padding:'2px 8px',fontSize:11,...mono,whiteSpace:'nowrap'}}>{label}</span>
+  );
+  const Input=({value,onChange,placeholder,type='text',style,readOnly})=>(
+    <input type={type} value={value} onChange={e=>onChange&&onChange(e.target.value)}
+      placeholder={placeholder} readOnly={readOnly}
+      style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:C.text,
+        padding:'11px 14px',width:'100%',outline:'none',...style}}
+      onFocus={e=>{if(!readOnly)e.target.style.borderColor=C.accent}}
+      onBlur={e=>e.target.style.borderColor=C.border}/>
+  );
+  const Spin=({size=20,color=C.accent})=>(
+    <span className="spin" style={{width:size,height:size,border:`3px solid ${color}22`,
+      borderTopColor:color,borderRadius:'50%',flexShrink:0}}/>
+  );
+  const Btn=({children,onClick,color=C.accent,disabled,small,danger,full,loading,style})=>(
+    <button onClick={onClick} disabled={disabled||loading}
+      style={{background:disabled?C.faint:danger?'#400010':'transparent',
+        border:`2px solid ${disabled?C.muted:danger?C.red:color}`,
+        color:disabled?C.muted:danger?C.red:color,borderRadius:8,
+        padding:small?'6px 14px':'10px 20px',cursor:disabled||loading?'not-allowed':'pointer',
+        fontSize:small?12:14,...font,fontWeight:600,width:full?'100%':'auto',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:6,transition:'all .2s',...style}}>
+      {loading&&<Spin size={14} color={disabled?C.muted:danger?C.red:color}/>}{children}
+    </button>
+  );
+  const Msg=({text,ok})=>text?(
+    <div style={{padding:'11px 14px',borderRadius:8,fontSize:13,lineHeight:1.5,
+      background:ok?`${C.green}14`:`${C.red}14`,border:`1px solid ${ok?C.green:C.red}44`,
+      color:ok?C.green:C.red}}>{text}</div>
+  ):null;
+
+  // ── App ───────────────────────────────────────────────────────────────────
+  function NexusTrader(){
+    // Core
+    const [tab,setTab]=useState('dashboard');
+    const [fbUser,setFbUser]=useState(null);
+    const [fbLoading,setFbLoading]=useState(true);
+    const [fbError,setFbError]=useState('');
+    const [profile,setProfile]=useState(null);
+    const [pulse,setPulse]=useState(false);
+
+    // Bot
+    const [botOn,setBotOnRaw]=useState(false);
+    const setBotOn=v=>{
+      setBotOnRaw(v);
+      if(fbUser) db.collection('users').doc(fbUser.uid).update({botOn:v,botStart:v?new Date().toISOString():null});
+    };
+
+    // Auth form
+    const [aScreen,setAScreen]=useState('login');
+    const [aName,setAName]=useState('');
+    const [aEmail,setAEmail]=useState('');
+    const [aPass,setAPass]=useState('');
+    const [aConf,setAConf]=useState('');
+    const [aPin,setAPin]=useState('');
+    const [aMsg,setAMsg]=useState({text:'',ok:false});
+    const [aLoading,setALoading]=useState(false);
+
+    // Settings
+    const [sTab,setSTab]=useState('api');
+    const [anthropicKey,setAnthropicKey]=useState('');
+    const [bnKey,setBnKey]=useState('');
+    const [bnSec,setBnSec]=useState('');
+    const [okxKey,setOkxKey]=useState('');
+    const [okxSec,setOkxSec]=useState('');
+    const [okxPass,setOkxPass]=useState('');
+    const [sMsg,setSMsg]=useState({text:'',ok:false});
+    const [sLoading,setSLoading]=useState(false);
+    const [pinPass,setPinPass]=useState('');
+    const [pinNew,setPinNew]=useState('');
+    const [pinMsg,setPinMsg]=useState({text:'',ok:false});
+
+    // Signals
+    const [signals,setSignals]=useState([]);
+    const [sigLoading,setSigLoading]=useState(false);
+    const [sigError,setSigError]=useState('');
+
+    // Bot control
+    const [selPairs,setSelPairs]=useState(['BTC/USDT','ETH/USDT','SOL/USDT']);
+    const [risk,setRisk]=useState('medium');
+    const [tradeAmt,setTradeAmt]=useState('10');
+    const [autoOn,setAutoOn]=useState(false);
+    const [logs,setLogs]=useState([]);
+    const [autoLoading,setAutoLoading]=useState(false);
+
+    // Exchange
+    const [exch,setExch]=useState({binance:false,okx:false});
+
+    // Wallet
+    const [withAmt,setWithAmt]=useState('');
+    const [withAddr,setWithAddr]=useState('');
+    const [withMsg,setWithMsg]=useState('');
+    const [pinModal,setPinModal]=useState(false);
+    const [pinInput,setPinInput]=useState('');
+    const [pinMsgW,setPinMsgW]=useState('');
+
+    // Misc
+    const [copied,setCopied]=useState('');
+    const [countdown,setCountdown]=useState('00:00:00');
+
+    // ── Admin state ─────────────────────────────────────────────────────────
+    const [adminUsers,setAdminUsers]=useState([]);
+    const [adminLoading,setAdminLoading]=useState(false);
+    const [adminSearch,setAdminSearch]=useState('');
+    const [adminMsg,setAdminMsg]=useState({text:'',ok:false});
+    const [selectedUser,setSelectedUser]=useState(null);
+    const [adminPlan,setAdminPlan]=useState('pro');
+    const [adminDays,setAdminDays]=useState('30');
+    const [adminActionLoading,setAdminActionLoading]=useState(false);
+    const [adminTab,setAdminTab]=useState('users');
+    const [adminWithdrawals,setAdminWithdrawals]=useState([]);
+    const [adminWLoading,setAdminWLoading]=useState(false);
+    const [trialLoading,setTrialLoading]=useState(false);
+
+    // ── Firebase auth listener ──────────────────────────────────────────────
+    useEffect(()=>{
+      // Timeout: if Firebase doesn't respond in 8s, show error
+      const timeout = setTimeout(()=>{
+        setFbLoading(false);
+        setFbError('Cannot connect to Firebase. Please open this app at its GitHub Pages URL, not from a downloaded file.');
+      }, 8000);
+
+      return auth.onAuthStateChanged(async user=>{
+        clearTimeout(timeout);
+        setFbUser(user);setFbLoading(false);
+        if(user){
+          const snap=await db.collection('users').doc(user.uid).get();
+          if(snap.exists){
+            const d=snap.data();setProfile(d);
+            setBotOnRaw(d.botOn||false);
+            setSelPairs(d.selPairs||['BTC/USDT','ETH/USDT','SOL/USDT']);
+            setRisk(d.risk||'medium');setTradeAmt(d.tradeAmt||'10');
+            setExch({binance:!!d.binanceConnected,okx:!!d.okxConnected});
+            // Always refresh refLink in Firestore to match current deployed URL
+            const currentBase=(window.location.origin+window.location.pathname).replace(/index\.html$/,'').replace(/\/$/,'');
+            const currentRefCode=d.refCode||('NEXUS'+user.uid.slice(0,6).toUpperCase());
+            const currentRefLink=`${currentBase}/?ref=${currentRefCode}`;
+            if(d.refLink!==currentRefLink){
+              db.collection('users').doc(user.uid).update({refCode:currentRefCode,refLink:currentRefLink});
+            }
+            // Load encrypted keys
+            try{
+              const ks=await db.collection('users').doc(user.uid).collection('private').doc('apikeys').get();
+              if(ks.exists){
+                const kd=ks.data(),s=user.uid;
+                if(kd.anthropic) setAnthropicKey(dec(kd.anthropic,s));
+                if(kd.bnKey)     setBnKey(dec(kd.bnKey,s));
+                if(kd.bnSec)     setBnSec(dec(kd.bnSec,s));
+                if(kd.okxKey)    setOkxKey(dec(kd.okxKey,s));
+                if(kd.okxSec)    setOkxSec(dec(kd.okxSec,s));
+                if(kd.okxPass)   setOkxPass(dec(kd.okxPass,s));
+              }
+            }catch(e){}
+          }
+        }else{setProfile(null);}
+      });
+    },[]);
+
+    // Real-time profile
+    useEffect(()=>{
+      if(!fbUser) return;
+      return db.collection('users').doc(fbUser.uid).onSnapshot(snap=>{if(snap.exists)setProfile(snap.data());});
+    },[fbUser]);
+
+    // Countdown
+    useEffect(()=>{
+      const tick=()=>{
+        const now=new Date(),hours=[8,14,20];let next=null;
+        for(const h of hours){const t=new Date(now);t.setUTCHours(h,0,0,0);if(t>now){next=t;break;}}
+        if(!next){next=new Date(now);next.setUTCDate(next.getUTCDate()+1);next.setUTCHours(8,0,0,0);}
+        const d=next-now,hh=Math.floor(d/3600000),mm=Math.floor((d%3600000)/60000),ss=Math.floor((d%60000)/1000);
+        setCountdown(`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`);
+      };
+      tick();const i=setInterval(tick,1000);return()=>clearInterval(i);
+    },[]);
+
+    // Bot pulse
+    useEffect(()=>{
+      if(!botOn) return;
+      const i=setInterval(()=>setPulse(p=>!p),800);return()=>clearInterval(i);
+    },[botOn]);
+
+    // Fonts
+    useEffect(()=>{
+      const l=document.createElement('link');l.rel='stylesheet';
+      l.href='https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Share+Tech+Mono&family=Exo+2:wght@400;600;700&display=swap';
+      document.head.appendChild(l);
+    },[]);
+
+    // ── Auth ────────────────────────────────────────────────────────────────
+    const doRegister=async()=>{
+      setAMsg({text:'',ok:false});
+      if(!aName.trim()) return setAMsg({text:'Enter your name.',ok:false});
+      if(!aEmail.includes('@')) return setAMsg({text:'Enter a valid email.',ok:false});
+      if(aPass.length<6) return setAMsg({text:'Password min 6 characters.',ok:false});
+      if(aPass!==aConf) return setAMsg({text:'Passwords do not match.',ok:false});
+      if(aPin.length!==4||isNaN(aPin)) return setAMsg({text:'PIN must be exactly 4 digits.',ok:false});
+      setALoading(true);
+      try{
+        const cr=await auth.createUserWithEmailAndPassword(aEmail.trim(),aPass);
+        const uid=cr.user.uid;
+        const refCode='NEXUS'+uid.slice(0,6).toUpperCase();
+        const base=(window.location.origin+window.location.pathname).replace(/index\.html$/,'').replace(/\/$/,'');
+        await db.collection('users').doc(uid).set({
+          name:aName.trim(),email:aEmail.trim().toLowerCase(),plan:'free',
+          pinHash:CryptoJS.SHA256(aPin).toString(),
+          refCode,refLink:`${base}/?ref=${refCode}`,
+          referralEarnings:0,totalReferrals:0,
+          botOn:false,selPairs:['BTC/USDT','ETH/USDT','SOL/USDT'],risk:'medium',tradeAmt:'10',
+          binanceConnected:false,okxConnected:false,
+          signalsUsedToday:0,signalsDate:new Date().toDateString(),
+          freeTrialUsed:false,
+          createdAt:firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        await cr.user.updateProfile({displayName:aName.trim()});
+      }catch(e){setAMsg({text:e.code==='auth/email-already-in-use'?'Email already registered. Log in instead.':e.message,ok:false});}
+      setALoading(false);
+    };
+
+    const doLogin=async()=>{
+      setAMsg({text:'',ok:false});
+      if(!aEmail.includes('@')) return setAMsg({text:'Enter a valid email.',ok:false});
+      if(!aPass) return setAMsg({text:'Enter your password.',ok:false});
+      setALoading(true);
+      try{await auth.signInWithEmailAndPassword(aEmail.trim(),aPass);}
+      catch(e){setAMsg({text:'Incorrect email or password.',ok:false});}
+      setALoading(false);
+    };
+
+    const doForgot=async()=>{
+      setAMsg({text:'',ok:false});
+      if(!aEmail.includes('@')) return setAMsg({text:'Enter your registered email.',ok:false});
+      setALoading(true);
+      try{
+        await auth.sendPasswordResetEmail(aEmail.trim());
+        setAMsg({text:'✅ Reset email sent — check your inbox.',ok:true});
+      }catch(e){setAMsg({text:'No account found with that email.',ok:false});}
+      setALoading(false);
+    };
+
+    const doLogout=()=>auth.signOut();
+
+    // ── Save API keys ───────────────────────────────────────────────────────
+    const saveKeys=async(type)=>{
+      if(!fbUser) return;
+      setSLoading(true);setSMsg({text:'',ok:false});
+      const s=fbUser.uid;
+      const ref=db.collection('users').doc(fbUser.uid).collection('private').doc('apikeys');
+      const plan=profile?.plan||'free';
+      try{
+        if(type==='anthropic'){
+          if(!anthropicKey.startsWith('sk-ant-')) return setSMsg({text:'❌ Invalid key — must start with sk-ant-',ok:false});
+          await ref.set({anthropic:enc(anthropicKey,s)},{merge:true});
+          setSMsg({text:'✅ Anthropic key saved securely.',ok:true});
+        }
+        if(type==='binance'){
+          if(plan==='free') return setSMsg({text:'❌ Upgrade to Pro to connect exchanges.',ok:false});
+          if(!bnKey||!bnSec) return setSMsg({text:'❌ Enter both Binance API key and secret.',ok:false});
+          await ref.set({bnKey:enc(bnKey,s),bnSec:enc(bnSec,s)},{merge:true});
+          await db.collection('users').doc(fbUser.uid).update({binanceConnected:true});
+          setExch(p=>({...p,binance:true}));
+          setSMsg({text:'✅ Binance connected and keys saved securely.',ok:true});
+        }
+        if(type==='okx'){
+          if(plan==='free') return setSMsg({text:'❌ Upgrade to Pro/VIP to connect exchanges.',ok:false});
+          if(plan==='pro'&&exch.binance) return setSMsg({text:'❌ Pro supports 1 exchange. Upgrade to VIP for both.',ok:false});
+          if(!okxKey||!okxSec||!okxPass) return setSMsg({text:'❌ Enter OKX key, secret, and passphrase.',ok:false});
+          await ref.set({okxKey:enc(okxKey,s),okxSec:enc(okxSec,s),okxPass:enc(okxPass,s)},{merge:true});
+          await db.collection('users').doc(fbUser.uid).update({okxConnected:true});
+          setExch(p=>({...p,okx:true}));
+          setSMsg({text:'✅ OKX connected and keys saved securely.',ok:true});
+        }
+      }catch(e){setSMsg({text:'❌ Save failed. Check connection.',ok:false});}
+      setSLoading(false);
+    };
+
+    const removeExch=async(e)=>{
+      if(!fbUser) return;
+      const ref=db.collection('users').doc(fbUser.uid).collection('private').doc('apikeys');
+      if(e==='binance'){
+        await ref.set({bnKey:'',bnSec:''},{merge:true});
+        await db.collection('users').doc(fbUser.uid).update({binanceConnected:false});
+        setBnKey('');setBnSec('');setExch(p=>({...p,binance:false}));
+      }else{
+        await ref.set({okxKey:'',okxSec:'',okxPass:''},{merge:true});
+        await db.collection('users').doc(fbUser.uid).update({okxConnected:false});
+        setOkxKey('');setOkxSec('');setOkxPass('');setExch(p=>({...p,okx:false}));
+      }
+      setSMsg({text:`✅ ${e==='binance'?'Binance':'OKX'} disconnected.`,ok:true});
+    };
+
+    // ── Change PIN ──────────────────────────────────────────────────────────
+    const doChangePin=async()=>{
+      setPinMsg({text:'',ok:false});
+      if(!pinPass) return setPinMsg({text:'Enter your current password.',ok:false});
+      if(pinNew.length!==4||isNaN(pinNew)) return setPinMsg({text:'New PIN must be 4 digits.',ok:false});
+      setSLoading(true);
+      try{
+        const cr=firebase.auth.EmailAuthProvider.credential(fbUser.email,pinPass);
+        await fbUser.reauthenticateWithCredential(cr);
+        await db.collection('users').doc(fbUser.uid).update({pinHash:CryptoJS.SHA256(pinNew).toString()});
+        setPinMsg({text:'✅ PIN updated successfully.',ok:true});
+        setPinPass('');setPinNew('');
+      }catch(e){setPinMsg({text:'❌ Incorrect password.',ok:false});}
+      setSLoading(false);
+    };
+
+    // ── Signals ─────────────────────────────────────────────────────────────
+    const fetchSignals=async()=>{
+      const plan=profile?.plan||'free';
+      const limit=PLANS[plan].signals;
+      const today=new Date().toDateString();
+      const used=profile?.signalsDate===today?profile.signalsUsedToday||0:0;
+      if(plan==='free'&&used>=limit){setSigError(`Free plan: ${limit} signals/day used. Upgrade to Pro for unlimited.`);return;}
+      if(!anthropicKey){setSigError('Add your Anthropic API key in Settings → API Keys.');return;}
+      setSigLoading(true);setSigError('');
+      try{
+        const res=await fetch('https://api.anthropic.com/v1/messages',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-api-key':anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+          body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1200,
+            messages:[{role:'user',content:`You are a professional crypto market analyst. Generate realistic AI trading signals. Return ONLY a valid JSON array, no markdown, no preamble:
+[{"pair":"BTC/USDT","signal":"BUY","price":"67840","target":"69500","stopLoss":"66200","confidence":"87%","reason":"RSI oversold + Golden cross on 4H","change24h":"+2.4%","strength":"STRONG","timeframe":"4H"},...]
+Generate for: BTC/USDT, ETH/USDT, BNB/USDT, SOL/USDT, XRP/USDT, ADA/USDT, DOGE/USDT, AVAX/USDT. Signal: BUY, SELL, or HOLD. Strength: STRONG, MODERATE, WEAK. Use realistic prices.`}]
+          })
+        });
+        const data=await res.json();
+        if(data.error) throw new Error(data.error.message);
+        const raw=data.content?.[0]?.text||'[]';
+        setSignals(JSON.parse(raw.replace(/```json|```/g,'').trim()));
+        if(fbUser) await db.collection('users').doc(fbUser.uid).update({signalsUsedToday:used+1,signalsDate:today});
+      }catch(e){setSigError('Signal fetch failed. Check your Anthropic API key in Settings.');}
+      setSigLoading(false);
+    };
+
+    // ── AI Auto Trade ───────────────────────────────────────────────────────
+    const runAutoTrade=useCallback(async()=>{
+      if(autoLoading||!anthropicKey) return;
+      setAutoLoading(true);
+      const log=(msg,color)=>setLogs(p=>[{time:new Date().toLocaleTimeString(),msg,color},...p.slice(0,99)]);
+      log('◎ AI scanning markets...',C.accent);
+      try{
+        const res=await fetch('https://api.anthropic.com/v1/messages',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-api-key':anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+          body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:400,
+            messages:[{role:'user',content:`AI crypto trading bot. Decide ONE trade action. Return ONLY valid JSON no markdown:
+{"action":"BUY","pair":"BTC/USDT","reason":"short reason","confidence":"75%","entry":"67500","target":"69000","stopLoss":"66200","amount":"${tradeAmt}","risk":"${risk}"}
+action: BUY, SELL, or HOLD. Realistic prices. Risk: ${risk}.`}]
+          })
+        });
+        const data=await res.json();
+        if(data.error) throw new Error(data.error.message);
+        const trade=JSON.parse(data.content?.[0]?.text.replace(/```json|```/g,'').trim()||'{}');
+        if(fbUser) db.collection('users').doc(fbUser.uid).collection('tradelog').add({...trade,timestamp:firebase.firestore.FieldValue.serverTimestamp()});
+        if(trade.action==='HOLD'){
+          log(`⏸ HOLD — ${trade.pair} · ${trade.reason} (${trade.confidence})`,C.gold);
+        }else{
+          log(`${trade.action==='BUY'?'▲ BUY':'▼ SELL'} ${trade.pair} @ $${trade.entry} → Target $${trade.target} · SL $${trade.stopLoss} · ${trade.confidence}`,trade.action==='BUY'?C.green:C.red);
+          log(`   ↳ ${trade.reason} · Amount: ${trade.amount} USDT`,C.muted);
+        }
+      }catch(e){log('⚠ AI analysis failed — check API key in Settings',C.red);}
+      setAutoLoading(false);
+    },[anthropicKey,tradeAmt,risk,autoLoading,fbUser]);
+
+    useEffect(()=>{
+      if(!autoOn||!botOn) return;
+      runAutoTrade();
+      const id=setInterval(runAutoTrade,5*60*1000);
+      return()=>clearInterval(id);
+    },[autoOn,botOn]);
+
+    const toggleAutoTrade=()=>{
+      const plan=profile?.plan||'free';
+      if(!PLANS[plan].autoTrade){setTab('settings');setSTab('plan');return;}
+      if(!anthropicKey){setTab('settings');setSTab('api');return;}
+      setAutoOn(v=>!v);
+    };
+
+    // ── Withdraw verify (with tiered fees) ──────────────────────────────────
+    const doWithdrawVerify=async()=>{
+      if(!fbUser||!profile) return;
+      if(pinInput.length!==4||isNaN(pinInput)){setPinMsgW('Enter your 4-digit PIN.');return;}
+      if(profile.pinHash!==CryptoJS.SHA256(pinInput).toString()){setPinMsgW('❌ Incorrect PIN. Withdrawal blocked.');return;}
+      const a=parseFloat(withAmt);
+      if(isNaN(a)||a<20){setPinMsgW('❌ Minimum withdrawal is 20 USDT');return;}
+      if(!withAddr){setPinMsgW('❌ Enter your TRC20 address');return;}
+      const {rate,label}=getWithdrawFee(a);
+      const fee=parseFloat((a*rate).toFixed(4));
+      const net=parseFloat((a-fee).toFixed(4));
+      // Save withdrawal record with fee info
+      await db.collection('users').doc(fbUser.uid).collection('withdrawals').add({
+        amount:a,fee,net,feeRate:label,address:withAddr,
+        status:'pending',timestamp:firebase.firestore.FieldValue.serverTimestamp()
+      });
+      // Credit fee to owner account ledger
+      await db.collection('owner_fees').add({
+        fromUid:fbUser.uid,fromEmail:fbUser.email,
+        amount:a,fee,feeRate:label,
+        timestamp:firebase.firestore.FieldValue.serverTimestamp(),
+        note:`Withdrawal fee from ${fbUser.email}`
+      });
+      setWithMsg(`✅ Withdrawal of ${net} USDT submitted (${a} − ${label} fee = ${net} USDT). Processing in 1–24 hours.`);
+      setWithAmt('');setWithAddr('');setPinModal(false);setPinInput('');setPinMsgW('');
+    };
+
+    const copy=(text,key)=>{navigator.clipboard.writeText(text).catch(()=>{});setCopied(key);setTimeout(()=>setCopied(''),2000);};
+
+    // ── Admin functions ──────────────────────────────────────────────────────
+    const isAdmin = fbUser?.email === ADMIN_EMAIL;
+
+    const loadUsers = async () => {
+      if (!isAdmin) return;
+      setAdminLoading(true);
+      try {
+        const snap = await db.collection('users').orderBy('createdAt','desc').limit(100).get();
+        const users = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+        setAdminUsers(users);
+      } catch(e) { setAdminMsg({text:'❌ Failed to load users.',ok:false}); }
+      setAdminLoading(false);
+    };
+
+    const activatePlan = async (uid, targetPlan, days) => {
+      if (!isAdmin) return;
+      setAdminActionLoading(true); setAdminMsg({text:'',ok:false});
+      try {
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + parseInt(days));
+        await db.collection('users').doc(uid).update({
+          plan: targetPlan,
+          planExpiry: firebase.firestore.Timestamp.fromDate(expiry),
+        });
+        // Update local list instantly
+        setAdminUsers(prev => prev.map(u => u.uid===uid
+          ? {...u, plan:targetPlan, planExpiry:firebase.firestore.Timestamp.fromDate(expiry)}
+          : u
+        ));
+        setAdminMsg({text:`✅ ${targetPlan.toUpperCase()} activated for ${days} days successfully.`,ok:true});
+        setSelectedUser(null);
+      } catch(e) { setAdminMsg({text:'❌ Failed to update plan. Try again.',ok:false}); }
+      setAdminActionLoading(false);
+    };
+
+    const downgradeUser = async (uid) => {
+      if (!isAdmin) return;
+      setAdminActionLoading(true); setAdminMsg({text:'',ok:false});
+      try {
+        await db.collection('users').doc(uid).update({ plan:'free', planExpiry:null });
+        setAdminUsers(prev => prev.map(u => u.uid===uid ? {...u,plan:'free',planExpiry:null} : u));
+        setAdminMsg({text:'✅ User downgraded to Free.',ok:true});
+        setSelectedUser(null);
+      } catch(e) { setAdminMsg({text:'❌ Failed to downgrade.',ok:false}); }
+      setAdminActionLoading(false);
+    };
+
+    const getUserExpiry = (user) => {
+      if (!user.planExpiry) return null;
+      return user.planExpiry.toDate ? user.planExpiry.toDate() : new Date(user.planExpiry);
+    };
+
+    const getUserDaysLeft = (user) => {
+      const exp = getUserExpiry(user);
+      if (!exp) return null;
+      return Math.ceil((exp - new Date()) / (1000*60*60*24));
+    };
+
+    // ── Free Trial (30 days, once per account) ──────────────────────────────
+    const claimFreeTrial = async () => {
+      if (!fbUser || !profile) return;
+      if (profile.freeTrialUsed) return;
+      setTrialLoading(true);
+      try {
+        const expiry = new Date();
+        expiry.setDate(expiry.getDate() + 30);
+        await db.collection('users').doc(fbUser.uid).update({
+          plan: 'pro',
+          planExpiry: firebase.firestore.Timestamp.fromDate(expiry),
+          freeTrialUsed: true,
+          freeTrialStart: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      } catch(e) { console.error(e); }
+      setTrialLoading(false);
+    };
+
+    // ── Admin: load all pending withdrawals ──────────────────────────────────
+    const loadWithdrawals = async () => {
+      if (!isAdmin) return;
+      setAdminWLoading(true);
+      try {
+        // Load from owner_fees collection
+        const snap = await db.collection('owner_fees').orderBy('timestamp','desc').limit(200).get();
+        setAdminWithdrawals(snap.docs.map(d=>({id:d.id,...d.data()})));
+      } catch(e) { setAdminMsg({text:'❌ Failed to load fees.',ok:false}); }
+      setAdminWLoading(false);
+    };
+
+    // ── Admin: approve or reject a withdrawal ───────────────────────────────
+    const updateWithdrawalStatus = async (userUid, withdrawalId, newStatus) => {
+      if (!isAdmin) return;
+      try {
+        await db.collection('users').doc(userUid).collection('withdrawals').doc(withdrawalId).update({ status: newStatus });
+        setAdminMsg({text:`✅ Withdrawal marked as ${newStatus}.`, ok: true});
+      } catch(e) { setAdminMsg({text:'❌ Failed to update.', ok:false}); }
+    };
+
+    // ── Derived ─────────────────────────────────────────────────────────────
+    // Plan expiry check — auto-downgrade if expired
+    const checkExpiry = useCallback(async () => {
+      if (!fbUser || !profile) return;
+      const expiry = profile.planExpiry;
+      if (!expiry || profile.plan === 'free') return;
+      const expiryDate = expiry.toDate ? expiry.toDate() : new Date(expiry);
+      if (new Date() > expiryDate) {
+        // Plan expired — downgrade to free in Firestore
+        await db.collection('users').doc(fbUser.uid).update({ plan: 'free', planExpiry: null });
+      }
+    }, [fbUser, profile]);
+
+    useEffect(() => { checkExpiry(); }, [profile]);
+
+    // Effective plan — use free if expired
+    const getRawPlan = () => {
+      const p = profile?.plan || 'free';
+      if (p === 'free') return 'free';
+      const expiry = profile?.planExpiry;
+      if (!expiry) return 'free'; // no expiry set = not paid
+      const expiryDate = expiry.toDate ? expiry.toDate() : new Date(expiry);
+      return new Date() > expiryDate ? 'free' : p;
+    };
+
+    const plan = getRawPlan();
+    const rawPlan = profile?.plan || 'free'; // what's stored (may be expired)
+    const isExpired = rawPlan !== 'free' && plan === 'free'; // paid but expired
+    const planExpiry = profile?.planExpiry;
+    const expiryDate = planExpiry ? (planExpiry.toDate ? planExpiry.toDate() : new Date(planExpiry)) : null;
+    const daysLeft = expiryDate ? Math.ceil((expiryDate - new Date()) / (1000*60*60*24)) : null;
+
+    const planInfo=PLANS[plan];
+    const refCode=profile?.refCode||('NEXUS'+(fbUser?.uid||'').slice(0,6).toUpperCase());
+    // Always build refLink dynamically so it uses the current deployed URL + referral code
+    const siteBase=(window.location.origin+window.location.pathname).replace(/index\.html$/,'').replace(/\/$/,'');
+    const refLink=refCode ? `${siteBase}/?ref=${refCode}` : '';
+    const userName=profile?.name||fbUser?.displayName||'Trader';
+
+    const TABS=[
+      {id:'dashboard',icon:'⬡',label:'Dashboard'},
+      {id:'signals',  icon:'◎',label:'AI Signals'},
+      {id:'bot',      icon:'⚙',label:'Bot Control'},
+      {id:'wallet',   icon:'◈',label:'Wallet'},
+      {id:'income',   icon:'◉',label:'Passive Inc.'},
+      {id:'settings', icon:'⊙',label:'Settings'},
+      {id:'guide',    icon:'?',label:'How To Use'},
+      ...(isAdmin ? [{id:'admin',icon:'★',label:'Admin'}] : []),
+    ];
+
+    // ── Loading / Error ─────────────────────────────────────────────────────
+    if(fbLoading||fbError) return(
+      <div style={{background:C.bg,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:20,padding:30}}>
+        <div style={{...orb,fontSize:22,color:C.accent,letterSpacing:3}}>NEXUS TRADER</div>
+        {fbError?(
+          <div style={{maxWidth:340,textAlign:'center'}}>
+            <div style={{fontSize:32,marginBottom:16}}>⚠️</div>
+            <div style={{fontSize:14,color:C.red,lineHeight:1.7,marginBottom:20}}>{fbError}</div>
+            <div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:'14px 16px',fontSize:13,color:C.accent,lineHeight:1.8,textAlign:'left'}}>
+              <strong>How to open correctly:</strong><br/>
+              1. Deploy to GitHub Pages<br/>
+              2. Open: <strong>crypto181.github.io/...</strong><br/>
+              3. Never open from Downloads folder
+            </div>
+          </div>
+        ):(
+          <Spin size={36}/>
+        )}
+      </div>
+    );
+
+    // ── Auth Screen ─────────────────────────────────────────────────────────
+    if(!fbUser) return(
+      <div style={{background:C.bg,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+        padding:20,...font,backgroundImage:`radial-gradient(ellipse at 30% 20%,#001830 0%,transparent 60%)`}}>
+        <div style={{width:'100%',maxWidth:420}}>
+          <div style={{textAlign:'center',marginBottom:28}}>
+            <div style={{width:64,height:64,borderRadius:'50%',background:`linear-gradient(135deg,${C.accent},${C.purple})`,
+              display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,fontWeight:900,...orb,
+              margin:'0 auto 14px',boxShadow:`0 0 32px ${C.accent}44`}}>N</div>
+            <div style={{...orb,fontSize:24,fontWeight:700,color:C.accent,letterSpacing:3}}>NEXUS TRADER</div>
+            <div style={{fontSize:13,color:C.muted,marginTop:6}}>AI-Powered Crypto Signal Bot</div>
+          </div>
+
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:26,boxShadow:`0 0 40px #00000088`}}>
+            <div style={{display:'flex',background:C.surface,borderRadius:10,padding:4,marginBottom:22,gap:4}}>
+              {[['login','Login'],['register','Register'],['forgot','Reset']].map(([s,l])=>(
+                <button key={s} onClick={()=>{setAScreen(s);setAMsg({text:'',ok:false});}}
+                  style={{flex:1,padding:'9px 0',border:'none',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:700,...font,
+                    background:aScreen===s?C.accent:'transparent',color:aScreen===s?C.bg:C.muted,transition:'all .2s'}}>{l}</button>
+              ))}
+            </div>
+
+            <div style={{display:'flex',flexDirection:'column',gap:13}}>
+              {aScreen==='register'&&<div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Full Name</div><Input value={aName} onChange={setAName} placeholder="Your full name"/></div>}
+              <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Email</div><Input value={aEmail} onChange={setAEmail} placeholder="you@email.com" type="email"/></div>
+              {aScreen!=='forgot'&&<div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Password</div><Input value={aPass} onChange={setAPass} placeholder="Min 6 characters" type="password"/></div>}
+              {aScreen==='register'&&<>
+                <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Confirm Password</div><Input value={aConf} onChange={setAConf} placeholder="Repeat password" type="password"/></div>
+                <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>4-Digit Withdraw PIN</div>
+                  <Input value={aPin} onChange={setAPin} placeholder="e.g. 1234" type="number"/>
+                  <div style={{fontSize:12,color:C.muted,marginTop:4}}>⚠ Remember this PIN — needed for withdrawals</div></div>
+              </>}
+              <Msg text={aMsg.text} ok={aMsg.ok}/>
+              <button onClick={aScreen==='login'?doLogin:aScreen==='register'?doRegister:doForgot}
+                disabled={aLoading}
+                style={{background:`linear-gradient(135deg,${C.accent},${C.purple})`,border:'none',borderRadius:10,
+                  color:C.bg,fontWeight:700,fontSize:15,padding:'13px',cursor:aLoading?'not-allowed':'pointer',...font,
+                  display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+                {aLoading&&<Spin size={16} color={C.bg}/>}
+                {aScreen==='login'?'→ Login':aScreen==='register'?'✓ Create Account':'📧 Send Reset Email'}
+              </button>
+            </div>
+            <div style={{marginTop:18,textAlign:'center',fontSize:12,color:C.muted,lineHeight:1.8}}>
+              🔒 Secured by Firebase Authentication<br/>Data encrypted and stored in the cloud
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+
+    // ── Main App ────────────────────────────────────────────────────────────
+    return(
+      <div style={{background:C.bg,minHeight:'100vh',color:C.text,...font,
+        backgroundImage:`radial-gradient(ellipse at 20% 0%,#001830 0%,transparent 60%)`}}>
+
+        {/* Header */}
+        <div style={{background:`${C.surface}F2`,borderBottom:`1px solid ${C.border}`,
+          position:'sticky',top:0,zIndex:100,backdropFilter:'blur(12px)'}}>
+          <div style={{maxWidth:1200,margin:'0 auto',display:'flex',alignItems:'center',
+            justifyContent:'space-between',padding:'0 16px',height:52}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{width:28,height:28,borderRadius:'50%',
+                background:`linear-gradient(135deg,${C.accent},${C.purple})`,
+                display:'flex',alignItems:'center',justifyContent:'center',
+                fontSize:12,fontWeight:900,...orb}}>N</div>
+              <div>
+                <div style={{...orb,fontSize:12,fontWeight:700,color:C.accent,letterSpacing:2,lineHeight:1.1}}>NEXUS</div>
+                <div style={{...orb,fontSize:7,color:C.muted,letterSpacing:3}}>TRADER</div>
+              </div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <Badge label={planInfo.name.toUpperCase()} color={planInfo.color}/>
+              <div style={{display:'flex',alignItems:'center',gap:5,
+                background:botOn?`${C.green}15`:`${C.muted}15`,
+                border:`1px solid ${botOn?C.green:C.muted}55`,borderRadius:20,padding:'4px 10px'}}>
+                <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+                  background:botOn?C.green:C.muted,
+                  boxShadow:botOn?`0 0 ${pulse?'10px':'4px'} ${C.green}`:''}}/>
+                <span style={{...mono,fontSize:10,color:botOn?C.green:C.muted,whiteSpace:'nowrap'}}>
+                  {botOn?'BOT ACTIVE':'BOT OFFLINE'}
+                </span>
+              </div>
+              <button onClick={doLogout} style={{background:'none',border:`1px solid ${C.border}`,
+                borderRadius:8,color:C.muted,cursor:'pointer',fontSize:13,padding:'4px 10px'}}>⏻</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{maxWidth:1200,margin:'0 auto',padding:'18px 14px 100px'}} className="fi">
+
+          {/* ── Expiry Banner ── */}
+          {isExpired&&(
+            <div style={{background:`${C.red}14`,border:`2px solid ${C.red}55`,borderRadius:12,
+              padding:'16px',marginBottom:16,textAlign:'center'}}>
+              <div style={{fontSize:20,marginBottom:6}}>⛔</div>
+              <div style={{fontSize:15,color:C.red,fontWeight:700,marginBottom:6}}>
+                Your {PLANS[rawPlan].name} plan has expired
+              </div>
+              <div style={{fontSize:13,color:C.muted,marginBottom:14,lineHeight:1.6}}>
+                Exchange connections and auto-trading are now locked.<br/>
+                Renew to restore full access immediately.
+              </div>
+              <div style={{background:C.surface,borderRadius:10,padding:'12px 14px',marginBottom:12,fontSize:13,color:C.text,lineHeight:1.8}}>
+                💳 M-Pesa <strong style={{color:C.accent}}>KES {PLANS[rawPlan].price.toLocaleString()}</strong> to <strong style={{color:C.accent}}>0724850318</strong><br/>
+                📱 WhatsApp proof to <strong style={{color:C.green}}>+254724850318</strong><br/>
+                ✅ Reactivated within 1 hour
+              </div>
+              <button onClick={()=>window.open('https://wa.me/254724850318?text='+encodeURIComponent(`Hi, I want to renew my ${PLANS[rawPlan].name} plan. Email: ${fbUser?.email}`),'_blank')}
+                style={{background:`linear-gradient(135deg,${C.green},${C.accent})`,border:'none',borderRadius:10,
+                  color:C.bg,fontWeight:700,fontSize:14,padding:'11px 24px',cursor:'pointer',width:'100%'}}>
+                💬 Renew Now via WhatsApp
+              </button>
+            </div>
+          )}
+
+          {/* ── Expiring Soon Warning (≤5 days left) ── */}
+          {!isExpired&&daysLeft!==null&&daysLeft<=5&&daysLeft>0&&(
+            <div style={{background:`${C.gold}12`,border:`1px solid ${C.gold}44`,borderRadius:10,
+              padding:'12px 16px',marginBottom:14,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <span style={{fontSize:18}}>⚠️</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:14,color:C.gold,fontWeight:600}}>
+                  Plan expires in {daysLeft} day{daysLeft===1?'':'s'}
+                </div>
+                <div style={{fontSize:12,color:C.muted}}>Renew now to avoid interruption</div>
+              </div>
+              <button onClick={()=>window.open('https://wa.me/254724850318?text='+encodeURIComponent(`Hi, I want to renew my ${planInfo.name} plan before it expires. Email: ${fbUser?.email}`),'_blank')}
+                style={{background:'transparent',border:`2px solid ${C.gold}`,color:C.gold,
+                  borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:700}}>
+                Renew →
+              </button>
+            </div>
+          )}
+
+          {/* ══ DASHBOARD ══ */}
+          {tab==='dashboard'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>Welcome, {userName} 👋</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:16}}>AI-powered trading · Signals at 08:00, 14:00 & 20:00 UTC</p>
+
+              {!anthropicKey&&(
+                <div onClick={()=>{setTab('settings');setSTab('api');}}
+                  style={{background:`${C.gold}12`,border:`1px solid ${C.gold}44`,borderRadius:10,
+                    padding:'12px 16px',marginBottom:14,cursor:'pointer',display:'flex',alignItems:'center',gap:10}}>
+                  <span style={{fontSize:18}}>⚡</span>
+                  <div><div style={{fontSize:14,color:C.gold,fontWeight:600}}>Add Anthropic API key to get started</div>
+                    <div style={{fontSize:12,color:C.muted}}>Tap here → Settings → API Keys</div></div>
+                </div>
+              )}
+
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,marginBottom:16}}>
+                {[
+                  {label:'Portfolio Balance',value:'$247.50',sub:'USDT',color:C.accent},
+                  {label:'Total Profit',value:'+$18.32',sub:'+8.0% ROI',color:C.green},
+                  {label:'Active Trades',value:'1',sub:'BNB/USDT',color:C.gold},
+                  {label:'Total Trades',value:'47',sub:'This month',color:C.purple},
+                  {label:'Win Rate',value:'84.2%',sub:'38/45 wins',color:C.green},
+                  {label:'Next Signal',value:countdown,sub:'Countdown',color:C.accent},
+                ].map((s,i)=>(
+                  <Box key={i} style={{textAlign:'center',padding:'12px 8px'}}>
+                    <div style={{fontSize:11,color:C.muted,marginBottom:5,letterSpacing:0.3}}>{s.label.toUpperCase()}</div>
+                    <div style={{...mono,fontSize:18,fontWeight:700,color:s.color,marginBottom:3}}>{s.value}</div>
+                    <div style={{fontSize:11,color:C.muted}}>{s.sub}</div>
+                  </Box>
+                ))}
+              </div>
+
+              <div style={{background:`${C.gold}10`,border:`1px solid ${C.gold}33`,borderRadius:10,
+                padding:'10px 14px',marginBottom:14,display:'flex',gap:8,alignItems:'flex-start'}}>
+                <span>⚠</span>
+                <div style={{fontSize:12,color:C.gold,lineHeight:1.6}}>
+                  <strong>Risk Disclaimer:</strong> Crypto trading involves substantial risk. AI signals are educational — trade responsibly and only invest what you can afford to lose.
+                </div>
+              </div>
+
+              <Box style={{overflowX:'auto'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <h3 style={{...orb,fontSize:13,color:C.text,letterSpacing:1}}>RECENT TRADES</h3>
+                  <Badge label="Live" color={C.green}/>
+                </div>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                  <thead><tr style={{borderBottom:`1px solid ${C.border}`}}>
+                    {['Pair','Side','Entry','Exit','PnL','%','Status'].map(h=>(
+                      <th key={h} style={{padding:'6px 8px',color:C.muted,textAlign:'left',fontWeight:400,fontSize:11}}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>{MOCK_TRADES.map((t,i)=>(
+                    <tr key={i} style={{borderBottom:`1px solid ${C.faint}`}}>
+                      <td style={{padding:'8px',...mono,color:C.text,fontWeight:600}}>{t.pair}</td>
+                      <td style={{padding:'8px'}}><Badge label={t.side} color={t.side==='BUY'?C.green:C.red}/></td>
+                      <td style={{padding:'8px',...mono,color:C.muted}}>{t.entry}</td>
+                      <td style={{padding:'8px',...mono,color:C.muted}}>{t.exit}</td>
+                      <td style={{padding:'8px',...mono,color:C.green,fontWeight:700}}>{t.pnl} USDT</td>
+                      <td style={{padding:'8px',...mono,color:C.green}}>{t.pct}</td>
+                      <td style={{padding:'8px'}}><Badge label={t.status} color={t.status==='Active'?C.gold:C.green}/></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </Box>
+            </div>
+          )}
+
+          {/* ══ AI SIGNALS ══ */}
+          {tab==='signals'&&(
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12,marginBottom:18}}>
+                <div>
+                  <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>AI Signals</h1>
+                  <p style={{color:C.muted,fontSize:13}}>{plan==='free'?`Free: ${planInfo.signals} signals/day · Upgrade for unlimited`:'Unlimited signals active'}</p>
+                </div>
+                <Btn onClick={fetchSignals} loading={sigLoading} color={C.accent}>◎ Generate Signals</Btn>
+              </div>
+              {sigError&&<div style={{marginBottom:14}}><Msg text={sigError} ok={false}/></div>}
+              {!anthropicKey&&!sigError&&(
+                <Box style={{textAlign:'center',padding:36,borderStyle:'dashed'}}>
+                  <div style={{fontSize:32,marginBottom:10}}>🔑</div>
+                  <div style={{color:C.muted,marginBottom:14,fontSize:14}}>Add your Anthropic API key in Settings to generate signals</div>
+                  <Btn onClick={()=>{setTab('settings');setSTab('api');}} color={C.accent}>Open Settings</Btn>
+                </Box>
+              )}
+              {signals.length>0&&(
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(290px,1fr))',gap:12}}>
+                  {signals.map((s,i)=>{
+                    // Build deep links for Binance and OKX
+                    const basePair = s.pair.replace('/',''); // BTC/USDT → BTCUSDT
+                    const okxPair  = s.pair.replace('/','-'); // BTC/USDT → BTC-USDT
+
+                    // Binance deep link — opens spot trading page for the pair
+                    const binanceUrl = `https://www.binance.com/en/trade/${basePair}?type=spot`;
+                    const binanceApp = `binance://spot?symbol=${basePair}`;
+
+                    // OKX deep link — opens spot trading page
+                    const okxUrl = `https://www.okx.com/trade-spot/${okxPair.toLowerCase()}`;
+                    const okxApp = `okx://spot?symbol=${okxPair}`;
+
+                    const openExchange = (appLink, webLink) => {
+                      // Try app first, fall back to web
+                      const a = document.createElement('a');
+                      a.href = appLink;
+                      a.click();
+                      setTimeout(() => window.open(webLink, '_blank'), 500);
+                    };
+
+                    const signalColor = s.signal==='BUY'?C.green:s.signal==='SELL'?C.red:C.gold;
+                    const isHold = s.signal==='HOLD';
+
+                    return(
+                    <Box key={i} style={{borderColor:`${signalColor}44`}}>
+                      {/* Header */}
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                        <span style={{...mono,fontSize:15,fontWeight:700,color:C.text}}>{s.pair}</span>
+                        <div style={{display:'flex',gap:5}}>
+                          <Badge label={s.signal} color={signalColor}/>
+                          <Badge label={s.strength} color={C.purple}/>
+                        </div>
+                      </div>
+
+                      {/* Signal data grid */}
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,marginBottom:10}}>
+                        {[['Price',`$${s.price}`,C.text],['24h',s.change24h,s.change24h?.startsWith('+')?C.green:C.red],
+                          ['Target ▲',`$${s.target}`,C.green],['Stop ▼',`$${s.stopLoss}`,C.red],
+                          ['Confidence',s.confidence,C.accent],['Timeframe',s.timeframe,C.purple]
+                        ].map(([l,v,c])=>(
+                          <div key={l}><div style={{fontSize:11,color:C.muted,marginBottom:2}}>{l}</div>
+                            <div style={{...mono,fontSize:13,color:c,fontWeight:600}}>{v}</div></div>
+                        ))}
+                      </div>
+
+                      {/* Reason */}
+                      <div style={{borderTop:`1px solid ${C.border}`,padding:'8px 0',fontSize:12,color:C.muted,lineHeight:1.5,marginBottom:10}}>
+                        ◎ {s.reason}
+                      </div>
+
+                      {/* Trade instructions */}
+                      {!isHold&&(
+                        <div style={{background:C.surface,borderRadius:8,padding:'10px 12px',marginBottom:10,fontSize:12,lineHeight:1.8}}>
+                          <div style={{color:C.muted,marginBottom:4,fontSize:11,letterSpacing:0.5}}>HOW TO TRADE</div>
+                          <div style={{color:C.text}}>
+                            1. Open exchange below<br/>
+                            2. Search <strong style={{color:C.accent,...mono}}>{s.pair}</strong><br/>
+                            3. Place <strong style={{color:signalColor}}>{s.signal}</strong> order at <strong style={{color:C.text,...mono}}>${s.price}</strong><br/>
+                            4. Set Take Profit: <strong style={{color:C.green,...mono}}>${s.target}</strong><br/>
+                            5. Set Stop Loss: <strong style={{color:C.red,...mono}}>${s.stopLoss}</strong>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Trade buttons */}
+                      {isHold?(
+                        <div style={{background:`${C.gold}12`,border:`1px solid ${C.gold}33`,borderRadius:8,
+                          padding:'10px',textAlign:'center',fontSize:13,color:C.gold}}>
+                          ⏸ HOLD — No action recommended. Wait for next signal.
+                        </div>
+                      ):(
+                        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+                          {/* Exchange buttons */}
+                          {(exch.binance||!exch.okx)&&(
+                            <button onClick={()=>openExchange(binanceApp, binanceUrl)}
+                              style={{background:'#1A1200',border:`2px solid #F0B90B`,
+                                color:'#F0B90B',borderRadius:8,padding:'10px',
+                                cursor:'pointer',fontSize:13,fontWeight:700,...font,
+                                display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+                              🟡 Trade on Binance
+                            </button>
+                          )}
+                          {(exch.okx||!exch.binance)&&(
+                            <button onClick={()=>openExchange(okxApp, okxUrl)}
+                              style={{background:'#001525',border:`2px solid #00AEFF`,
+                                color:'#00AEFF',borderRadius:8,padding:'10px',
+                                cursor:'pointer',fontSize:13,fontWeight:700,...font,
+                                display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+                              🔵 Trade on OKX
+                            </button>
+                          )}
+                          {/* Copy trade details */}
+                          <button onClick={()=>copy(
+                            `${s.signal} ${s.pair}\nEntry: $${s.price}\nTarget: $${s.target}\nStop Loss: $${s.stopLoss}\nConfidence: ${s.confidence}\n${s.reason}`,
+                            `sig${i}`
+                          )}
+                            style={{background:'transparent',border:`1px solid ${C.border}`,
+                              color:C.muted,borderRadius:8,padding:'8px',
+                              cursor:'pointer',fontSize:12,...font}}>
+                            {copied===`sig${i}`?'✓ Copied!':'⧉ Copy Signal Details'}
+                          </button>
+                        </div>
+                      )}
+                    </Box>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ══ BOT CONTROL ══ */}
+          {tab==='bot'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>Bot Control</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:18}}>Configure and manage your AI trading bot</p>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:14}}>
+
+                {/* Status */}
+                <Box style={{gridColumn:'1/-1'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:14}}>
+                    <div>
+                      <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 4px',letterSpacing:1}}>BOT STATUS</h3>
+                      <p style={{color:C.muted,fontSize:13}}>{botOn?'Bot is running — monitoring markets.':'Bot is offline. Press Start to begin.'}</p>
+                    </div>
+                    <div style={{display:'flex',gap:8}}>
+                      <Btn onClick={()=>setBotOn(true)} disabled={botOn} color={C.green}>▶ Start</Btn>
+                      <Btn onClick={()=>setBotOn(false)} disabled={!botOn} danger>■ Stop</Btn>
+                    </div>
+                  </div>
+                  {botOn&&(
+                    <div style={{marginTop:14,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:8}}>
+                      {[
+                        {label:'Pairs',value:`${selPairs.length}`},
+                        {label:'Amount',value:`$${tradeAmt} USDT`},
+                        {label:'Risk',value:risk.toUpperCase()},
+                        {label:'AI Trading',value:autoOn?'ON':'OFF'},
+                        {label:'Exchange',value:exch.binance?'Binance':exch.okx?'OKX':'None'},
+                        {label:'Strategy',value:'AI Adaptive'},
+                      ].map((s,i)=>(
+                        <div key={i} style={{background:C.surface,borderRadius:8,padding:'9px 12px',border:`1px solid ${C.faint}`}}>
+                          <div style={{fontSize:11,color:C.muted,marginBottom:3}}>{s.label}</div>
+                          <div style={{...mono,fontSize:12,color:C.accent}}>{s.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Box>
+
+                {/* Pairs */}
+                <Box>
+                  <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 10px',letterSpacing:1}}>TRADING PAIRS</h3>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                    {PAIRS.map(p=>(
+                      <button key={p} onClick={()=>setSelPairs(prev=>prev.includes(p)?prev.filter(x=>x!==p):[...prev,p])}
+                        style={{background:selPairs.includes(p)?`${C.accent}22`:C.surface,
+                          border:`2px solid ${selPairs.includes(p)?C.accent:C.borderBright}`,
+                          color:selPairs.includes(p)?C.accent:C.muted,
+                          borderRadius:6,padding:'4px 9px',cursor:'pointer',fontSize:11,...mono,
+                          fontWeight:selPairs.includes(p)?700:400}}>{p}</button>
+                    ))}
+                  </div>
+                  <div style={{marginTop:7,fontSize:12,color:C.muted}}>{selPairs.length} pairs selected</div>
+                </Box>
+
+                {/* Risk */}
+                <Box>
+                  <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 10px',letterSpacing:1}}>RISK MANAGEMENT</h3>
+                  <div style={{marginBottom:12}}>
+                    <div style={{fontSize:13,color:C.muted,marginBottom:7}}>Risk Level</div>
+                    <div style={{display:'flex',gap:6}}>
+                      {[['low','Low',C.green],['medium','Medium',C.gold],['high','High',C.red]].map(([v,l,c])=>(
+                        <button key={v} onClick={()=>setRisk(v)}
+                          style={{flex:1,background:risk===v?`${c}22`:C.surface,border:`2px solid ${risk===v?c:C.borderBright}`,
+                            color:risk===v?c:C.muted,borderRadius:8,padding:'7px 0',cursor:'pointer',fontSize:12,...font,fontWeight:risk===v?700:400}}>{l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{fontSize:13,color:C.muted,marginBottom:6}}>Trade Amount (USDT)</div>
+                  <Input value={tradeAmt} onChange={setTradeAmt} placeholder="10" type="number"/>
+                  <div style={{fontSize:11,color:C.muted,marginTop:4}}>Min $10 · Recommended $10–$50</div>
+                </Box>
+
+                {/* AI Auto-Trade */}
+                <Box style={{gridColumn:'1/-1',borderColor:autoOn?`${C.green}55`:`${C.accent}33`}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12,marginBottom:14}}>
+                    <div>
+                      <h3 style={{...orb,fontSize:13,color:autoOn?C.green:C.accent,margin:'0 0 4px',letterSpacing:1}}>◎ AI AUTO-TRADING</h3>
+                      <p style={{fontSize:13,color:C.muted}}>Claude AI analyzes markets every 5 min and logs trade decisions.</p>
+                    </div>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                      {autoLoading&&<span style={{...mono,fontSize:11,color:C.accent}}>◎ Analyzing...</span>}
+                      <Btn onClick={toggleAutoTrade} disabled={!botOn} color={autoOn?C.red:C.green} danger={autoOn}>
+                        {autoOn?'■ Stop AI':'▶ Start AI'}
+                      </Btn>
+                      {autoOn&&<Btn onClick={runAutoTrade} disabled={autoLoading} color={C.accent} small>↺ Now</Btn>}
+                    </div>
+                  </div>
+                  {!planInfo.autoTrade&&(
+                    <div style={{padding:'10px 14px',borderRadius:8,background:`${C.gold}12`,border:`1px solid ${C.gold}44`,
+                      fontSize:13,color:C.gold,marginBottom:12}}>
+                      ⭐ AI Auto-Trading requires Pro or VIP.{' '}
+                      <span style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setTab('settings');setSTab('plan');}}>Upgrade →</span>
+                    </div>
+                  )}
+                  {!anthropicKey&&planInfo.autoTrade&&(
+                    <div style={{padding:'10px 14px',borderRadius:8,background:`${C.accent}10`,border:`1px solid ${C.accent}44`,
+                      fontSize:13,color:C.accent,marginBottom:12}}>
+                      Add your Anthropic API key in Settings to enable AI trading.
+                    </div>
+                  )}
+                  <div style={{background:C.bg,borderRadius:8,border:`1px solid ${C.border}`,
+                    minHeight:90,maxHeight:240,overflowY:'auto',padding:10,...mono,fontSize:12}}>
+                    {logs.length===0
+                      ?<div style={{color:C.faint,textAlign:'center',padding:'20px 0'}}>No activity. Start AI Trading to see live decisions.</div>
+                      :logs.map((l,i)=>(
+                        <div key={i} style={{color:l.color,marginBottom:4,lineHeight:1.5,
+                          borderBottom:i<logs.length-1?`1px solid ${C.faint}`:'none',paddingBottom:4}}>
+                          <span style={{color:C.muted,marginRight:6}}>[{l.time}]</span>{l.msg}
+                        </div>
+                      ))
+                    }
+                  </div>
+                  {logs.length>0&&<div style={{marginTop:8,textAlign:'right'}}>
+                    <Btn onClick={()=>setLogs([])} color={C.muted} small>Clear</Btn>
+                  </div>}
+                </Box>
+              </div>
+            </div>
+          )}
+
+          {/* ══ WALLET ══ */}
+          {tab==='wallet'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>Wallet</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:18}}>Deposit and withdrawal management</p>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:14}}>
+
+                <Box style={{gridColumn:'1/-1',background:`linear-gradient(135deg,#0B1A2C,#091520)`,borderColor:`${C.accent}33`}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:10}}>
+                    <div>
+                      <div style={{fontSize:12,color:C.muted,marginBottom:5}}>TOTAL BALANCE</div>
+                      <div style={{...mono,fontSize:34,fontWeight:700,color:C.accent}}>$247.50</div>
+                      <div style={{fontSize:12,color:C.muted,marginTop:4}}>USDT · +$18.32 profit (+8.0%)</div>
+                    </div>
+                    <Badge label={planInfo.name.toUpperCase()} color={planInfo.color}/>
+                  </div>
+                </Box>
+
+                <Box>
+                  <h3 style={{...orb,fontSize:13,color:C.green,margin:'0 0 14px',letterSpacing:1}}>⊕ DEPOSIT USDT</h3>
+                  <div style={{background:C.surface,borderRadius:8,padding:12,marginBottom:10}}>
+                    <div style={{fontSize:11,color:C.muted,marginBottom:5}}>DEPOSIT ADDRESS (TRC20)</div>
+                    <div style={{...mono,fontSize:11,color:C.accent,wordBreak:'break-all',marginBottom:9}}>TVmeVKvkYebBTh6EF66EBm2BoVqCwGbhL4</div>
+                    <Btn onClick={()=>copy('TVmeVKvkYebBTh6EF66EBm2BoVqCwGbhL4','dep')} color={C.green} small full>
+                      {copied==='dep'?'✓ Copied!':'⧉ Copy Address'}
+                    </Btn>
+                  </div>
+                  <div style={{fontSize:12,color:C.muted,lineHeight:1.7}}>⚡ 1–3 min confirmation · USDT TRC20 only · Min 10 USDT</div>
+                </Box>
+
+                <Box>
+                  <h3 style={{...orb,fontSize:13,color:C.red,margin:'0 0 14px',letterSpacing:1}}>⊖ WITHDRAW USDT</h3>
+                  <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                    <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Amount (USDT)</div>
+                      <Input value={withAmt} onChange={setWithAmt} placeholder="Min: 20 USDT" type="number"/></div>
+                    {/* Live fee preview */}
+                    {withAmt&&!isNaN(parseFloat(withAmt))&&parseFloat(withAmt)>=20&&(()=>{
+                      const a=parseFloat(withAmt);
+                      const {rate,label}=getWithdrawFee(a);
+                      const fee=(a*rate).toFixed(4);
+                      const net=(a-parseFloat(fee)).toFixed(4);
+                      return(
+                        <div style={{background:C.surface,borderRadius:8,padding:'10px 12px',fontSize:12,lineHeight:1.8}}>
+                          <div style={{color:C.muted,marginBottom:4,fontSize:11,letterSpacing:0.4}}>FEE BREAKDOWN</div>
+                          <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:C.muted}}>Requested:</span><span style={{color:C.text,...mono}}>{a} USDT</span></div>
+                          <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:C.muted}}>Fee ({label}):</span><span style={{color:C.red,...mono}}>− {fee} USDT</span></div>
+                          <div style={{display:'flex',justifyContent:'space-between',borderTop:`1px solid ${C.border}`,marginTop:4,paddingTop:4}}><span style={{color:C.green,fontWeight:700}}>You receive:</span><span style={{color:C.green,...mono,fontWeight:700}}>{net} USDT</span></div>
+                        </div>
+                      );
+                    })()}
+                    <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Your TRC20 Address</div>
+                      <Input value={withAddr} onChange={setWithAddr} placeholder="TRC20 address"/></div>
+                    <div style={{fontSize:12,color:C.muted,padding:'8px 10px',background:C.surface,borderRadius:8,lineHeight:1.7}}>
+                      💰 Fee tiers: 20–100 USDT → 5% · 101–500 USDT → 10% · 501+ USDT → 15%<br/>
+                      Fees are processed as part of your withdrawal.
+                    </div>
+                    <Btn onClick={()=>{
+                      const a=parseFloat(withAmt);
+                      if(isNaN(a)||a<20){setWithMsg('❌ Minimum withdrawal is 20 USDT');return;}
+                      if(!withAddr){setWithMsg('❌ Enter your TRC20 address');return;}
+                      setWithMsg('');setPinInput('');setPinMsgW('');setPinModal(true);
+                    }} color={C.red} danger full>🔒 Request Withdrawal</Btn>
+                    {withMsg&&<Msg text={withMsg} ok={withMsg.startsWith('✅')}/>}
+                  </div>
+                </Box>
+
+                <Box style={{gridColumn:'1/-1'}}>
+                  <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 12px',letterSpacing:1}}>TRANSACTION HISTORY</h3>
+                  {[
+                    {type:'Deposit',amount:'+100 USDT',status:'Confirmed',time:'2 days ago',hash:'TX8f2a...4d91',color:C.green,icon:'⊕'},
+                    {type:'Deposit',amount:'+129.18 USDT',status:'Confirmed',time:'5 days ago',hash:'TX3c1b...8e22',color:C.green,icon:'⊕'},
+                    {type:'Profit', amount:'+18.32 USDT',status:'Credited', time:'Today',     hash:'Internal',    color:C.accent,icon:'◈'},
+                  ].map((tx,i,arr)=>(
+                    <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                      padding:'10px 0',borderBottom:i<arr.length-1?`1px solid ${C.faint}`:'none',flexWrap:'wrap',gap:8}}>
+                      <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                        <div style={{width:32,height:32,borderRadius:'50%',background:`${tx.color}18`,
+                          display:'flex',alignItems:'center',justifyContent:'center',color:tx.color}}>{tx.icon}</div>
+                        <div>
+                          <div style={{fontSize:14,color:C.text}}>{tx.type}</div>
+                          <div style={{fontSize:12,color:C.muted}}>{tx.time} · {tx.hash}</div>
+                        </div>
+                      </div>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <div style={{...mono,fontSize:14,color:tx.color,fontWeight:700}}>{tx.amount}</div>
+                        <Badge label={tx.status} color={tx.color}/>
+                      </div>
+                    </div>
+                  ))}
+                </Box>
+              </div>
+            </div>
+          )}
+
+          {/* ══ PASSIVE INCOME ══ */}
+          {tab==='income'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>Passive Income</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:18}}>Earn {planInfo.refRate}% lifetime commission on referrals</p>
+
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:10,marginBottom:16}}>
+                {[
+                  {label:'Referral Earnings',value:`$${profile?.referralEarnings?.toFixed(2)||'0.00'}`,color:C.green},
+                  {label:'Total Referrals',value:`${profile?.totalReferrals||0}`,color:C.accent},
+                  {label:'Commission Rate',value:`${planInfo.refRate}%`,color:C.gold},
+                  {label:'Lifetime',value:'Unlimited',color:C.purple},
+                ].map((s,i)=>(
+                  <Box key={i} style={{textAlign:'center',padding:'12px 8px'}}>
+                    <div style={{fontSize:10,color:C.muted,marginBottom:5,letterSpacing:0.3}}>{s.label.toUpperCase()}</div>
+                    <div style={{...mono,fontSize:18,fontWeight:700,color:s.color}}>{s.value}</div>
+                  </Box>
+                ))}
+              </div>
+
+              <Box style={{marginBottom:14}}>
+                <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 12px',letterSpacing:1}}>YOUR REFERRAL LINK</h3>
+                <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:12,marginBottom:12}}>
+                  <div style={{fontSize:11,color:C.muted,marginBottom:3}}>REFERRAL CODE</div>
+                  <div style={{...mono,fontSize:18,color:C.accent,fontWeight:700,marginBottom:8}}>{refCode}</div>
+                  <div style={{fontSize:11,color:C.muted,marginBottom:4}}>LINK</div>
+                  <div style={{...mono,fontSize:11,color:C.text,wordBreak:'break-all',marginBottom:10}}>{refLink}</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <Btn onClick={()=>copy(refLink,'link')} color={C.accent} small>{copied==='link'?'✓ Copied!':'⧉ Copy Link'}</Btn>
+                    <Btn onClick={()=>copy(refCode,'code')} color={C.purple} small>{copied==='code'?'✓ Copied!':'⧉ Copy Code'}</Btn>
+                  </div>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                  {[
+                    {label:'WhatsApp',color:C.green,url:`https://wa.me/?text=${encodeURIComponent(`🚀 Join Nexus Trader — AI-Powered Crypto Signal Bot!\n\nGet BUY/SELL signals, auto-trading & referral income.\n\n👉 Sign up here: ${refLink}\n\nUse my referral code: ${refCode}`)}`},
+                    {label:'Telegram',color:C.accent,url:`https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent(`🚀 Join Nexus Trader — AI crypto signals bot! Use my referral code: ${refCode}`)}`},
+                    {label:'Twitter/X',color:'#1DA1F2',url:`https://twitter.com/intent/tweet?text=${encodeURIComponent(`🚀 Join Nexus Trader — AI-powered crypto signals & auto-trading bot!\n\nSign up: ${refLink}\nCode: ${refCode}`)}`},
+                    {label:'Facebook',color:'#1877F2',url:`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(refLink)}&quote=${encodeURIComponent(`Join Nexus Trader — AI crypto signals bot! Code: ${refCode}`)}`},
+                  ].map((s,i)=>(
+                    <button key={i} onClick={()=>window.open(s.url,'_blank')}
+                      style={{background:'transparent',border:`2px solid ${s.color}`,color:s.color,
+                        borderRadius:8,padding:'9px',cursor:'pointer',fontSize:13,fontWeight:600,...font}}>{s.label}</button>
+                  ))}
+                </div>
+              </Box>
+
+              <Box>
+                <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 12px',letterSpacing:1}}>QR CODE SHARE</h3>
+                <div style={{textAlign:'center'}}>
+                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(refLink)}&bgcolor=080E1A&color=00CFFF&margin=12`}
+                    alt="QR" style={{borderRadius:12,border:`2px solid ${C.accent}44`,width:180,height:180}}/>
+                  <div style={{...mono,fontSize:14,color:C.accent,marginTop:8}}>{refCode}</div>
+                  <div style={{marginTop:10}}>
+                    <Btn onClick={async()=>{
+                      try{
+                        const url=`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(refLink)}&bgcolor=080E1A&color=00CFFF&margin=20`;
+                        const res=await fetch(url);const blob=await res.blob();
+                        const blobUrl=URL.createObjectURL(blob);
+                        const a=document.createElement('a');a.href=blobUrl;a.download='nexustrader-qr.png';a.click();
+                        setTimeout(()=>URL.revokeObjectURL(blobUrl),3000);
+                      }catch{window.open(`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(refLink)}&bgcolor=080E1A&color=00CFFF`,'_blank');}
+                    }} color={C.purple}>⬇ Download QR</Btn>
+                  </div>
+                </div>
+              </Box>
+            </div>
+          )}
+
+          {/* ══ SETTINGS ══ */}
+          {tab==='settings'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>Settings</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:16}}>API keys encrypted with AES-256 · Stored securely in Firestore</p>
+
+              <div style={{display:'flex',background:C.surface,borderRadius:10,padding:4,marginBottom:18,gap:4,flexWrap:'wrap'}}>
+                {[['api','🔑 API Keys'],['exchanges','⇄ Exchanges'],['plan','⭐ Plan'],['security','🔒 Security'],['account','👤 Account']].map(([s,l])=>(
+                  <button key={s} onClick={()=>setSTab(s)}
+                    style={{flex:1,minWidth:70,padding:'8px 4px',border:'none',borderRadius:8,cursor:'pointer',
+                      fontSize:11,fontWeight:700,...font,background:sTab===s?C.accent:'transparent',
+                      color:sTab===s?C.bg:C.muted,transition:'all .2s'}}>{l}</button>
+                ))}
+              </div>
+
+              {sMsg.text&&<div style={{marginBottom:14}}><Msg text={sMsg.text} ok={sMsg.ok}/></div>}
+
+              {/* API Keys */}
+              {sTab==='api'&&(
+                <Box>
+                  <h3 style={{...orb,fontSize:13,color:C.accent,margin:'0 0 6px',letterSpacing:1}}>ANTHROPIC API KEY</h3>
+                  <p style={{fontSize:13,color:C.muted,marginBottom:14,lineHeight:1.6}}>
+                    Powers AI signals and auto-trading. Get yours at <strong style={{color:C.accent}}>console.anthropic.com</strong><br/>
+                    Set a monthly spending limit on Anthropic for safety.
+                  </p>
+                  <div style={{marginBottom:12}}>
+                    <div style={{fontSize:13,color:C.muted,marginBottom:5}}>API Key</div>
+                    <Input value={anthropicKey} onChange={setAnthropicKey} placeholder="sk-ant-api03-..." type="password"/>
+                  </div>
+                  <Btn onClick={()=>saveKeys('anthropic')} loading={sLoading} color={C.accent}>💾 Save Key Securely</Btn>
+                  <div style={{marginTop:10,padding:'10px 12px',borderRadius:8,background:C.surface,fontSize:12,color:C.muted,lineHeight:1.6}}>
+                    🔒 Your key is encrypted with AES-256 using your Firebase UID as salt before being stored in Firestore.<br/>
+                    It is never stored as plain text and never visible in the source code.
+                  </div>
+                </Box>
+              )}
+
+              {/* Exchanges */}
+              {sTab==='exchanges'&&(
+                <div style={{display:'flex',flexDirection:'column',gap:14}}>
+                  {plan==='free'&&(
+                    <div style={{padding:'12px 14px',borderRadius:10,background:`${C.gold}12`,border:`1px solid ${C.gold}44`,fontSize:13,color:C.gold}}>
+                      ⭐ Exchange connections require Pro or VIP.{' '}
+                      <span style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>setSTab('plan')}>Upgrade →</span>
+                    </div>
+                  )}
+
+                  {/* Binance */}
+                  <Box style={{borderColor:exch.binance?`${C.green}55`:C.border}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <div style={{width:34,height:34,borderRadius:8,background:'#1A1200',
+                          display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🟡</div>
+                        <div><div style={{fontSize:15,color:C.text,fontWeight:700}}>Binance</div>
+                          <div style={{fontSize:11,color:C.muted}}>Spot Trading · Pro & VIP</div></div>
+                      </div>
+                      <Badge label={exch.binance?'Connected ✓':'Not Connected'} color={exch.binance?C.green:C.muted}/>
+                    </div>
+                    {exch.binance?(
+                      <div>
+                        <div style={{fontSize:13,color:C.green,marginBottom:10}}>✅ Connected · Keys stored encrypted in Firestore</div>
+                        <Btn onClick={()=>removeExch('binance')} color={C.red} danger small>Disconnect</Btn>
+                      </div>
+                    ):(
+                      <div style={{display:'flex',flexDirection:'column',gap:9}}>
+                        <div><div style={{fontSize:12,color:C.muted,marginBottom:5}}>API Key</div><Input value={bnKey} onChange={setBnKey} placeholder="Binance API Key" type="password"/></div>
+                        <div><div style={{fontSize:12,color:C.muted,marginBottom:5}}>Secret Key</div><Input value={bnSec} onChange={setBnSec} placeholder="Binance Secret Key" type="password"/></div>
+                        <div style={{fontSize:12,color:C.muted,lineHeight:1.6,padding:'9px 12px',background:C.surface,borderRadius:8}}>
+                          ⚠ Enable <strong style={{color:C.gold}}>Spot Trading ONLY</strong>. Never enable withdrawal permissions.
+                        </div>
+                        <Btn onClick={()=>saveKeys('binance')} loading={sLoading} color={C.gold} disabled={plan==='free'}>Connect Binance</Btn>
+                      </div>
+                    )}
+                  </Box>
+
+                  {/* OKX */}
+                  <Box style={{borderColor:exch.okx?`${C.green}55`:C.border}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <div style={{width:34,height:34,borderRadius:8,background:'#001525',
+                          display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>🔵</div>
+                        <div><div style={{fontSize:15,color:C.text,fontWeight:700}}>OKX</div>
+                          <div style={{fontSize:11,color:C.muted}}>Spot Trading · VIP only for dual exchange</div></div>
+                      </div>
+                      <Badge label={exch.okx?'Connected ✓':'Not Connected'} color={exch.okx?C.green:C.muted}/>
+                    </div>
+                    {exch.okx?(
+                      <div>
+                        <div style={{fontSize:13,color:C.green,marginBottom:10}}>✅ Connected · Keys stored encrypted in Firestore</div>
+                        <Btn onClick={()=>removeExch('okx')} color={C.red} danger small>Disconnect</Btn>
+                      </div>
+                    ):(
+                      <div style={{display:'flex',flexDirection:'column',gap:9}}>
+                        <div><div style={{fontSize:12,color:C.muted,marginBottom:5}}>API Key</div><Input value={okxKey} onChange={setOkxKey} placeholder="OKX API Key" type="password"/></div>
+                        <div><div style={{fontSize:12,color:C.muted,marginBottom:5}}>Secret Key</div><Input value={okxSec} onChange={setOkxSec} placeholder="OKX Secret" type="password"/></div>
+                        <div><div style={{fontSize:12,color:C.muted,marginBottom:5}}>Passphrase</div><Input value={okxPass} onChange={setOkxPass} placeholder="OKX Passphrase" type="password"/></div>
+                        <Btn onClick={()=>saveKeys('okx')} loading={sLoading} color={C.accent} disabled={plan==='free'}>Connect OKX</Btn>
+                      </div>
+                    )}
+                  </Box>
+                </div>
+              )}
+
+              {/* Plan */}
+              {sTab==='plan'&&(
+                <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                  {/* Current plan status */}
+                  <div style={{padding:'14px 16px',borderRadius:10,background:`${planInfo.color}12`,border:`1px solid ${planInfo.color}44`}}>
+                    <div style={{fontSize:14,color:planInfo.color,fontWeight:700,marginBottom:6}}>
+                      Current Plan: {planInfo.name.toUpperCase()}
+                      {isExpired&&<span style={{color:C.red,marginLeft:8}}>— EXPIRED</span>}
+                    </div>
+
+                  {/* FREE TRIAL BANNER */}
+                  {plan==='free'&&!profile?.freeTrialUsed&&(
+                    <div style={{background:`linear-gradient(135deg,${C.green}18,${C.accent}12)`,border:`2px solid ${C.green}55`,
+                      borderRadius:12,padding:'16px',marginBottom:4,marginTop:8}}>
+                      <div style={{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
+                        <span style={{fontSize:28}}>🎁</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:15,color:C.green,fontWeight:700,marginBottom:4}}>Unlock FREE Pro Trial — 30 Days!</div>
+                          <div style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:10}}>
+                            Get full Pro access: unlimited AI signals, auto-trading & exchange connection for 30 days — absolutely free. One-time offer per account. Expires automatically after 30 days.
+                          </div>
+                          <Btn onClick={claimFreeTrial} loading={trialLoading} color={C.green} full>
+                            🚀 Claim Free 30-Day Pro Trial
+                          </Btn>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {plan==='free'&&profile?.freeTrialUsed&&(
+                    <div style={{fontSize:12,color:C.muted,marginTop:6,padding:'8px 10px',background:C.surface,borderRadius:8}}>
+                      ℹ️ Free trial already used. Upgrade below to restore Pro/VIP access.
+                    </div>
+                  )}
+                    {expiryDate&&!isExpired&&(
+                      <div style={{fontSize:13,color:C.muted}}>
+                        Expires: <span style={{color:daysLeft<=5?C.gold:C.text,fontWeight:600}}>
+                          {expiryDate.toLocaleDateString('en-KE',{day:'numeric',month:'long',year:'numeric'})}
+                          {daysLeft!==null&&` (${daysLeft} day${daysLeft===1?'':'s'} left)`}
+                        </span>
+                      </div>
+                    )}
+                    {plan==='free'&&!isExpired&&(
+                      <div style={{fontSize:13,color:C.muted}}>Upgrade to unlock exchange connections and auto-trading</div>
+                    )}
+                  </div>
+
+                  {/* Renewal card if expired */}
+                  {isExpired&&(
+                    <div style={{background:`${C.red}10`,border:`2px solid ${C.red}44`,borderRadius:10,padding:'14px 16px'}}>
+                      <div style={{fontSize:14,color:C.red,fontWeight:700,marginBottom:10}}>⛔ Renew Your {PLANS[rawPlan].name} Plan</div>
+                      <div style={{fontSize:13,color:C.muted,lineHeight:1.8,marginBottom:12}}>
+                        💳 M-Pesa <strong style={{color:C.accent}}>KES {PLANS[rawPlan].price.toLocaleString()}</strong> to <strong style={{color:C.accent}}>0724850318</strong><br/>
+                        📧 Include your email: <strong style={{color:C.text}}>{fbUser?.email}</strong><br/>
+                        📱 WhatsApp proof to <strong style={{color:C.green}}>+254724850318</strong>
+                      </div>
+                      <button onClick={()=>window.open('https://wa.me/254724850318?text='+encodeURIComponent(`Hi, renewing ${PLANS[rawPlan].name} plan. Email: ${fbUser?.email}`),'_blank')}
+                        style={{background:`linear-gradient(135deg,${C.green},${C.accent})`,border:'none',borderRadius:10,
+                          color:C.bg,fontWeight:700,fontSize:14,padding:'11px',cursor:'pointer',width:'100%'}}>
+                        💬 Renew via WhatsApp
+                      </button>
+                    </div>
+                  )}
+
+                  {Object.entries(PLANS).map(([key,p])=>(
+                    <Box key={key} style={{borderColor:plan===key?`${p.color}66`:C.border,background:plan===key?`${p.color}07`:C.card}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                        <div>
+                          <div style={{fontSize:16,color:p.color,fontWeight:700,...orb}}>{p.name.toUpperCase()}</div>
+                          <div style={{fontSize:20,color:C.text,fontWeight:700,marginTop:3}}>{p.price===0?'Free':`KES ${p.price.toLocaleString()}/mo`}</div>
+                        </div>
+                        {plan===key&&<Badge label="Current Plan" color={p.color}/>}
+                      </div>
+                      <div style={{display:'flex',flexDirection:'column',gap:5,marginBottom:12}}>
+                        {[
+                          [`AI Signals: ${p.signals===999?'Unlimited':p.signals+'/day'}`,true],
+                          [`Auto-Trading: ${p.autoTrade?'✅ Included':'❌ Not included'}`,p.autoTrade],
+                          [`Exchanges: ${p.exchanges===0?'None (signals only)':p.exchanges===1?'1 exchange':'Binance + OKX'}`,p.exchanges>0],
+                          [`Signal History: ${p.history}`,true],
+                          [`Referral Commission: ${p.refRate}%`,true],
+                        ].map(([text,active],i)=>(
+                          <div key={i} style={{fontSize:13,color:active?C.text:C.muted,display:'flex',gap:6}}>
+                            <span style={{color:active?p.color:C.muted}}>◦</span>{text}
+                          </div>
+                        ))}
+                      </div>
+                      {plan!==key&&(
+                        <Btn color={p.color} full onClick={()=>{
+                          const msg = key==='free'
+                            ? `To downgrade: WhatsApp +254724850318 with your email: ${fbUser?.email}`
+                            : `To upgrade to ${p.name}: M-Pesa KES ${p.price} to 0724850318 · Include email: ${fbUser?.email} · WhatsApp proof to +254724850318 · Activated within 1 hour.`;
+                          setSMsg({text:msg,ok:key==='free'?false:true});
+                        }}>
+                          {key==='free'?'Downgrade to Free':`Upgrade to ${p.name} — KES ${p.price.toLocaleString()}/mo`}
+                        </Btn>
+                      )}
+                    </Box>
+                  ))}
+                  <div style={{padding:'12px 14px',borderRadius:8,background:C.surface,fontSize:13,color:C.muted,lineHeight:1.7}}>
+                    💳 <strong style={{color:C.text}}>Payment:</strong> M-Pesa to 0724850318 · Use your email as reference · WhatsApp proof to +254724850318 · Activated within 1 hour
+                  </div>
+                </div>
+              )}
+
+              {/* Security */}
+              {sTab==='security'&&(
+                <div style={{display:'flex',flexDirection:'column',gap:14}}>
+                  <Box>
+                    <h3 style={{...orb,fontSize:13,color:C.purple,margin:'0 0 6px',letterSpacing:1}}>🔑 CHANGE WITHDRAW PIN</h3>
+                    <p style={{fontSize:13,color:C.muted,marginBottom:14,lineHeight:1.6}}>Your current password is required to change the PIN for security.</p>
+                    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                      <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>Current Password</div>
+                        <Input value={pinPass} onChange={setPinPass} placeholder="Your password" type="password"/></div>
+                      <div><div style={{fontSize:13,color:C.muted,marginBottom:5}}>New 4-Digit PIN</div>
+                        <Input value={pinNew} onChange={setPinNew} placeholder="e.g. 5678" type="number"/></div>
+                      {pinMsg.text&&<Msg text={pinMsg.text} ok={pinMsg.ok}/>}
+                      <Btn onClick={doChangePin} loading={sLoading} color={C.purple}>🔑 Update PIN</Btn>
+                    </div>
+                  </Box>
+                  <Box>
+                    <h3 style={{...orb,fontSize:13,color:C.accent,margin:'0 0 12px',letterSpacing:1}}>🔒 SECURITY OVERVIEW</h3>
+                    {[
+                      {icon:'🔐',label:'Authentication',value:'Firebase Auth (Google-grade)'},
+                      {icon:'🔒',label:'API Key Storage',value:'AES-256 encrypted in Firestore'},
+                      {icon:'🛡',label:'Database Rules',value:'Restricted to account owner only'},
+                      {icon:'🔑',label:'Withdraw PIN',value:'SHA-256 hashed, never plain text'},
+                      {icon:'☁',label:'Data Location',value:'Google Cloud europe-west1 (Belgium)'},
+                    ].map((s,i)=>(
+                      <div key={i} style={{display:'flex',gap:10,padding:'9px 0',borderBottom:i<4?`1px solid ${C.faint}`:'none',alignItems:'flex-start'}}>
+                        <span style={{fontSize:16}}>{s.icon}</span>
+                        <div><div style={{fontSize:12,color:C.muted}}>{s.label}</div>
+                          <div style={{fontSize:13,color:C.text}}>{s.value}</div></div>
+                      </div>
+                    ))}
+                  </Box>
+                </div>
+              )}
+
+              {/* Account */}
+              {sTab==='account'&&(
+                <div style={{display:'flex',flexDirection:'column',gap:14}}>
+                  <Box>
+                    <h3 style={{...orb,fontSize:13,color:C.text,margin:'0 0 14px',letterSpacing:1}}>ACCOUNT INFO</h3>
+                    {[
+                      {label:'Name',value:profile?.name||'—'},
+                      {label:'Email',value:fbUser?.email||'—'},
+                      {label:'Plan',value:planInfo.name.toUpperCase()},
+                      {label:'Referral Code',value:refCode},
+                      {label:'Member Since',value:profile?.createdAt?.toDate?.()?.toLocaleDateString()||'Today'},
+                    ].map((s,i)=>(
+                      <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                        padding:'9px 0',borderBottom:i<4?`1px solid ${C.faint}`:'none',flexWrap:'wrap',gap:6}}>
+                        <div style={{fontSize:13,color:C.muted}}>{s.label}</div>
+                        <div style={{...mono,fontSize:13,color:C.text}}>{s.value}</div>
+                      </div>
+                    ))}
+                  </Box>
+                  <Box style={{borderColor:`${C.red}33`}}>
+                    <h3 style={{...orb,fontSize:13,color:C.red,margin:'0 0 8px',letterSpacing:1}}>DANGER ZONE</h3>
+                    <p style={{fontSize:13,color:C.muted,marginBottom:12}}>Logging out requires email and password to sign back in.</p>
+                    <Btn onClick={doLogout} color={C.red} danger full>⏻ Logout</Btn>
+                  </Box>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ══ HOW TO USE ══ */}
+          {tab==='guide'&&(
+            <div>
+              <h1 style={{...orb,fontSize:20,color:C.white,margin:'0 0 4px'}}>How To Use</h1>
+              <p style={{color:C.muted,fontSize:13,marginBottom:18}}>Complete guide — from registration to your first trade</p>
+              <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                {[
+                  {n:'01',title:'Create Your Account',color:C.accent,steps:[
+                    'Open the app and tap Register',
+                    'Enter your full name, email and a strong password (min 6 characters)',
+                    'Set a 4-digit Withdraw PIN — needed every time you withdraw funds. Remember it.',
+                    'Tap Create Account — you are logged in instantly across all devices',
+                    'Your account is secured by Firebase Authentication (Google-grade security)',
+                  ]},
+                  {n:'02',title:'Get Your Anthropic API Key (Required)',color:C.purple,steps:[
+                    'Go to console.anthropic.com and sign up or log in',
+                    'Go to API Keys → Create Key — copy the key (starts with sk-ant-...)',
+                    'In this app: Settings → API Keys → paste your key → tap Save Key Securely',
+                    'Your key is AES-256 encrypted and stored in Firestore — never visible in source code',
+                    'Tip: Set a monthly spending limit on Anthropic ($5–10) for safety. Signals cost ~$0.003 each.',
+                  ]},
+                  {n:'03',title:'Choose Your Plan',color:C.gold,steps:[
+                    'Free plan: 3 AI signals per day, no exchange connection, no auto-trading',
+                    '🎁 FREE TRIAL: New accounts can unlock a FREE 30-day Pro trial in Settings → Plan',
+                    'Pro plan (KES 999/month): unlimited signals, 1 exchange, auto-trading enabled, 10% referral',
+                    'VIP plan (KES 2,499/month): unlimited signals, Binance + OKX, auto-trading, 15% referral',
+                    'To upgrade: Settings → Plan → tap Upgrade → follow M-Pesa payment instructions',
+                    'Send KES to 0724850318 · WhatsApp proof to +254724850318 · Activated within 1 hour',
+                  ]},
+                  {n:'04',title:'Connect Your Exchange (Pro & VIP)',color:C.green,steps:[
+                    'On Binance or OKX: go to API Management → Create new API key',
+                    'Enable Spot Trading permission ONLY — never enable withdrawal permissions on a bot key',
+                    'In this app: Settings → Exchanges → paste API key and secret → tap Connect',
+                    'Pro plan: 1 exchange (Binance OR OKX) · VIP plan: both exchanges',
+                    'Your keys are AES-256 encrypted and saved privately — only you can access them',
+                  ]},
+                  {n:'05',title:'Generate AI Trading Signals',color:C.accent,steps:[
+                    'Go to AI Signals tab → tap Generate Signals',
+                    'Claude AI analyzes 8 major crypto pairs and returns BUY, SELL, or HOLD signals',
+                    'Each signal shows: entry price, target price, stop-loss, confidence score, and reasoning',
+                    'Free plan: 3 signals per day · Pro/VIP: unlimited signals',
+                    'Signals are generated fresh each time using real AI analysis — not pre-set data',
+                  ]},
+                  {n:'06',title:'Execute a Trade Manually',color:C.green,steps:[
+                    'On any BUY or SELL signal, read the step-by-step instructions shown on the card',
+                    'Tap "Trade on Binance" or "Trade on OKX" — the exchange app opens automatically',
+                    'The exact trading pair is pre-selected for you on the exchange',
+                    'Place order at the entry price shown, set take profit and stop loss as instructed',
+                    'HOLD signals mean no action needed — wait for the next signal',
+                    'Use "Copy Signal Details" to share the trade in a group or save for reference',
+                  ]},
+                  {n:'07',title:'Start Bot & AI Auto-Trading (Pro & VIP)',color:C.purple,steps:[
+                    'Bot Control tab → select the trading pairs you want to monitor',
+                    'Set risk level: Low (safer) · Medium · High (larger exposure)',
+                    'Set trade amount per signal in USDT — recommended $10–$50 to start',
+                    'Tap Start Bot → then tap Start AI Trading',
+                    'Claude AI analyzes markets every 5 minutes and logs every BUY/SELL/HOLD decision',
+                    'All decisions are saved permanently to your account in Firestore',
+                    'Requires Pro or VIP plan and your Anthropic API key saved in Settings',
+                  ]},
+                  {n:'08',title:'Withdraw Funds',color:C.red,steps:[
+                    'Go to Wallet tab → Withdraw USDT section',
+                    'Enter the amount (minimum 20 USDT) and your TRC20 wallet address',
+                    'A fee is automatically calculated: 20–100 USDT = 5% · 101–500 USDT = 10% · 501+ USDT = 15%',
+                    'The fee breakdown is shown live — you see exactly how much you will receive',
+                    'Tap Request Withdrawal — a PIN confirmation screen appears with the final net amount',
+                    'Enter your 4-digit Withdraw PIN to authorise the transaction',
+                    'Withdrawals are processed within 1–24 hours',
+                    'Double-check your TRC20 address before confirming — withdrawals are irreversible',
+                  ]},
+                  {n:'09',title:'Change or Reset Your PIN',color:C.gold,steps:[
+                    'Go to Settings → Security → Change Withdraw PIN',
+                    'Enter your current password to verify your identity',
+                    'Enter your new 4-digit PIN → tap Update PIN',
+                    'If you forgot your password: log out → tap Reset on login screen → check your email',
+                    'Keep your PIN private — never share it with anyone including support',
+                  ]},
+                  {n:'10',title:'Earn from Referrals',color:C.green,steps:[
+                    'Go to Passive Income tab — your unique referral link and QR code are shown',
+                    'Share via WhatsApp, Telegram, Twitter, Facebook or download the QR code',
+                    'When someone signs up using your link and pays for a plan you earn commission',
+                    'Free: 5% commission · Pro: 10% · VIP: 15% lifetime commission on their subscription',
+                    'Referral earnings are tracked and displayed in your Passive Income dashboard',
+                  ]},
+                  {n:'11',title:'Security Best Practices',color:C.red,steps:[
+                    'Never share your password, PIN or API keys with anyone — including support',
+                    'Use a strong unique password for this app',
+                    'On your exchange: enable Spot Trading ONLY on your API key — never withdrawal permissions',
+                    'Set a spending limit on your Anthropic account to prevent unexpected charges',
+                    'If your exchange API key is compromised: Settings → Exchanges → Disconnect immediately',
+                    'All data is AES-256 encrypted and stored in Google Cloud europe-west1 (Belgium)',
+                  ]},
+                ].map((s,i)=>(
+                  <Box key={i} style={{borderLeft:`4px solid ${s.color}`}}>
+                    <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+                      <div style={{...orb,fontSize:24,fontWeight:900,color:s.color,flexShrink:0,lineHeight:1}}>{s.n}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:15,color:C.text,fontWeight:700,marginBottom:8}}>{s.title}</div>
+                        {s.steps.map((step,j)=>(
+                          <div key={j} style={{fontSize:13,color:C.muted,marginBottom:5,display:'flex',gap:7,lineHeight:1.5}}>
+                            <span style={{color:s.color,flexShrink:0}}>◦</span>{step}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </Box>
+                ))}
+
+                {/* Support box */}
+                <Box style={{borderColor:`${C.green}44`,background:`${C.green}06`}}>
+                  <h3 style={{...orb,fontSize:13,color:C.green,margin:'0 0 10px',letterSpacing:1}}>💬 NEED HELP?</h3>
+                  <p style={{fontSize:13,color:C.muted,marginBottom:14,lineHeight:1.6}}>
+                    Having trouble? Our support team is available via WhatsApp.
+                  </p>
+                  <button onClick={()=>window.open('https://wa.me/254724850318?text='+encodeURIComponent('Hi, I need help with Nexus Trader. My email is: '),'_blank')}
+                    style={{background:`linear-gradient(135deg,${C.green},${C.accent})`,border:'none',
+                      borderRadius:10,color:C.bg,fontWeight:700,fontSize:14,padding:'11px',
+                      cursor:'pointer',width:'100%',...font}}>
+                    💬 Chat on WhatsApp
+                  </button>
+                </Box>
+              </div>
+            </div>
+          )}
+
+          {/* ══ ADMIN PANEL ══ */}
+          {tab==='admin'&&isAdmin&&(
+            <div>
+              {/* Header */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:12,marginBottom:16}}>
+                <div>
+                  <h1 style={{...orb,fontSize:20,color:C.gold,margin:'0 0 4px'}}>★ Admin Panel</h1>
+                  <p style={{color:C.muted,fontSize:13}}>Full control — users, plans, fees, withdrawals</p>
+                </div>
+              </div>
+
+              {adminMsg.text&&<div style={{marginBottom:14}}><Msg text={adminMsg.text} ok={adminMsg.ok}/></div>}
+
+              {/* Admin sub-tabs */}
+              <div style={{display:'flex',background:C.surface,borderRadius:10,padding:4,marginBottom:16,gap:4,flexWrap:'wrap'}}>
+                {[['users','👥 Users'],['fees','💰 Fees'],['withdrawals','⊖ Withdrawals'],['guide','📋 Guide']].map(([s,l])=>(
+                  <button key={s} onClick={()=>setAdminTab(s)}
+                    style={{flex:1,minWidth:70,padding:'8px 4px',border:'none',borderRadius:8,cursor:'pointer',
+                      fontSize:11,fontWeight:700,...font,background:adminTab===s?C.gold:'transparent',
+                      color:adminTab===s?C.bg:C.muted,transition:'all .2s'}}>{l}</button>
+                ))}
+              </div>
+
+              {/* ── USERS TAB ── */}
+              {adminTab==='users'&&(
+                <div>
+                  <div style={{display:'flex',justifyContent:'flex-end',marginBottom:12}}>
+                    <Btn onClick={loadUsers} loading={adminLoading} color={C.gold}>↺ Load Users</Btn>
+                  </div>
+
+                  {/* Stats row */}
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))',gap:10,marginBottom:16}}>
+                    {[
+                      {label:'Total Users',   value:adminUsers.length,                                          color:C.accent},
+                      {label:'Free Users',    value:adminUsers.filter(u=>u.plan==='free').length,               color:C.muted},
+                      {label:'Pro Users',     value:adminUsers.filter(u=>u.plan==='pro').length,                color:C.accent},
+                      {label:'VIP Users',     value:adminUsers.filter(u=>u.plan==='vip').length,                color:C.gold},
+                      {label:'Monthly Rev',  value:`KES ${(adminUsers.filter(u=>u.plan==='pro').length*999 + adminUsers.filter(u=>u.plan==='vip').length*2499).toLocaleString()}`, color:C.green},
+                      {label:'Expiring ≤5d', value:adminUsers.filter(u=>{const d=getUserDaysLeft(u);return d!==null&&d<=5&&d>0;}).length, color:C.red},
+                    ].map((s,i)=>(
+                      <Box key={i} style={{textAlign:'center',padding:'10px 6px',borderColor:i===4?`${C.green}44`:C.border}}>
+                        <div style={{fontSize:10,color:C.muted,marginBottom:3}}>{s.label.toUpperCase()}</div>
+                        <div style={{...mono,fontSize:16,fontWeight:700,color:s.color}}>{s.value}</div>
+                      </Box>
+                    ))}
+                  </div>
+
+                  {adminUsers.length===0&&!adminLoading&&(
+                    <Box style={{textAlign:'center',padding:40,borderStyle:'dashed'}}>
+                      <div style={{fontSize:32,marginBottom:10}}>👥</div>
+                      <div style={{color:C.muted,marginBottom:16}}>Tap "Load Users" to see all registered users</div>
+                    </Box>
+                  )}
+
+                  {adminUsers.length>0&&(
+                    <div style={{marginBottom:14}}>
+                      <Input value={adminSearch} onChange={setAdminSearch} placeholder="Search by name or email..."/>
+                    </div>
+                  )}
+
+                  {adminUsers
+                    .filter(u=>!adminSearch||u.name?.toLowerCase().includes(adminSearch.toLowerCase())||u.email?.toLowerCase().includes(adminSearch.toLowerCase()))
+                    .map(u=>{
+                      const exp=getUserExpiry(u);
+                      const days=getUserDaysLeft(u);
+                      const isExp=u.plan!=='free'&&exp&&new Date()>exp;
+                      const expiringSoon=days!==null&&days<=5&&days>0;
+                      return(
+                        <Box key={u.uid} style={{marginBottom:10,
+                          borderColor: isExp?`${C.red}55`:expiringSoon?`${C.gold}55`:u.plan!=='free'?`${C.green}33`:C.border}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:10}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+                                <span style={{fontSize:14,color:C.text,fontWeight:700}}>{u.name||'—'}</span>
+                                <Badge label={u.plan?.toUpperCase()||'FREE'}
+                                  color={u.plan==='vip'?C.gold:u.plan==='pro'?C.accent:C.muted}/>
+                                {isExp&&<Badge label="EXPIRED" color={C.red}/>}
+                                {expiringSoon&&<Badge label={`${days}d left`} color={C.gold}/>}
+                                {u.freeTrialUsed&&<Badge label="Trial Used" color={C.purple}/>}
+                              </div>
+                              <div style={{...mono,fontSize:11,color:C.muted,marginBottom:3}}>{u.email}</div>
+                              <div style={{fontSize:11,color:C.muted}}>
+                                {exp?(isExp?`Expired: ${exp.toLocaleDateString()}`:`Expires: ${exp.toLocaleDateString()} (${days}d left)`):'No expiry set'}
+                                {' · '}{u.createdAt?.toDate?.()?.toLocaleDateString()||'Unknown date'}
+                              </div>
+                            </div>
+
+                            <Btn onClick={()=>setSelectedUser(selectedUser?.uid===u.uid?null:u)}
+                              color={selectedUser?.uid===u.uid?C.muted:C.accent} small>
+                              {selectedUser?.uid===u.uid?'✕ Close':'⚙ Manage'}
+                            </Btn>
+                          </div>
+
+                          {selectedUser?.uid===u.uid&&(
+                            <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
+                              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                                <div>
+                                  <div style={{fontSize:12,color:C.muted,marginBottom:6}}>Activate Plan</div>
+                                  <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                                    {[['pro','Pro — KES 999',C.accent],['vip','VIP — KES 2499',C.gold]].map(([v,l,c])=>(
+                                      <button key={v} onClick={()=>setAdminPlan(v)}
+                                        style={{background:adminPlan===v?`${c}22`:C.surface,
+                                          border:`2px solid ${adminPlan===v?c:C.borderBright}`,
+                                          color:adminPlan===v?c:C.muted,borderRadius:8,padding:'8px 10px',
+                                          cursor:'pointer',fontSize:12,...font,fontWeight:adminPlan===v?700:400,
+                                          textAlign:'left'}}>{l}</button>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div style={{fontSize:12,color:C.muted,marginBottom:6}}>Duration (days)</div>
+                                  <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                                    {[['30','30 days (1 month)'],['60','60 days (2 months)'],['90','90 days (3 months)'],['365','365 days (1 year)']].map(([v,l])=>(
+                                      <button key={v} onClick={()=>setAdminDays(v)}
+                                        style={{background:adminDays===v?`${C.purple}22`:C.surface,
+                                          border:`2px solid ${adminDays===v?C.purple:C.borderBright}`,
+                                          color:adminDays===v?C.purple:C.muted,borderRadius:8,padding:'8px 10px',
+                                          cursor:'pointer',fontSize:12,...font,fontWeight:adminDays===v?700:400,
+                                          textAlign:'left'}}>{l}</button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{background:C.surface,borderRadius:8,padding:'10px 12px',marginBottom:12,fontSize:13,color:C.muted,lineHeight:1.7}}>
+                                Activating: <strong style={{color:C.text}}>{adminPlan.toUpperCase()}</strong> for{' '}
+                                <strong style={{color:C.text}}>{u.name}</strong> for{' '}
+                                <strong style={{color:C.purple}}>{adminDays} days</strong><br/>
+                                Expires: <strong style={{color:C.accent}}>{(()=>{const d=new Date();d.setDate(d.getDate()+parseInt(adminDays));return d.toLocaleDateString('en-KE',{day:'numeric',month:'long',year:'numeric'});})()}</strong>
+                              </div>
+
+                              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                                <Btn onClick={()=>activatePlan(u.uid,adminPlan,adminDays)}
+                                  loading={adminActionLoading} color={C.green} style={{flex:1}}>
+                                  ✅ Activate {adminPlan.toUpperCase()} — {adminDays} days
+                                </Btn>
+                                {/* Grant free 30-day trial manually */}
+                                {!u.freeTrialUsed&&u.plan==='free'&&(
+                                  <Btn onClick={async()=>{
+                                    setAdminActionLoading(true);
+                                    const expiry=new Date();expiry.setDate(expiry.getDate()+30);
+                                    await db.collection('users').doc(u.uid).update({
+                                      plan:'pro',planExpiry:firebase.firestore.Timestamp.fromDate(expiry),
+                                      freeTrialUsed:true,freeTrialStart:firebase.firestore.FieldValue.serverTimestamp()
+                                    });
+                                    setAdminUsers(prev=>prev.map(x=>x.uid===u.uid?{...x,plan:'pro',freeTrialUsed:true}:x));
+                                    setAdminMsg({text:`✅ Free 30-day trial granted to ${u.name}.`,ok:true});
+                                    setSelectedUser(null);setAdminActionLoading(false);
+                                  }} loading={adminActionLoading} color={C.green}>
+                                    🎁 Grant Trial
+                                  </Btn>
+                                )}
+                                {u.plan!=='free'&&(
+                                  <Btn onClick={()=>downgradeUser(u.uid)}
+                                    loading={adminActionLoading} color={C.red} danger>
+                                    ⬇ Downgrade
+                                  </Btn>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </Box>
+                      );
+                    })
+                  }
+                </div>
+              )}
+
+              {/* ── FEES TAB ── */}
+              {adminTab==='fees'&&(
+                <div>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+                    <div style={{fontSize:14,color:C.text,fontWeight:700}}>Withdrawal Fee Revenue</div>
+                    <Btn onClick={loadWithdrawals} loading={adminWLoading} color={C.gold} small>↺ Load</Btn>
+                  </div>
+
+                  {/* Fee tier info */}
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:16}}>
+                    {[
+                      {range:'20–100 USDT',rate:'5%',color:C.green},
+                      {range:'101–500 USDT',rate:'10%',color:C.gold},
+                      {range:'501+ USDT',rate:'15%',color:C.red},
+                    ].map((t,i)=>(
+                      <Box key={i} style={{textAlign:'center',padding:'10px 6px',borderColor:`${t.color}44`}}>
+                        <div style={{fontSize:10,color:C.muted,marginBottom:4}}>{t.range}</div>
+                        <div style={{...mono,fontSize:20,fontWeight:700,color:t.color}}>{t.rate}</div>
+                        <div style={{fontSize:10,color:C.muted,marginTop:3}}>fee tier</div>
+                      </Box>
+                    ))}
+                  </div>
+
+                  {/* Total fees collected */}
+                  {adminWithdrawals.length>0&&(()=>{
+                    const totalFees = adminWithdrawals.reduce((s,w)=>s+(w.fee||0),0);
+                    const totalVol  = adminWithdrawals.reduce((s,w)=>s+(w.amount||0),0);
+                    return(
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+                        <Box style={{textAlign:'center',borderColor:`${C.green}44`}}>
+                          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>TOTAL FEES EARNED</div>
+                          <div style={{...mono,fontSize:22,fontWeight:700,color:C.green}}>{totalFees.toFixed(2)} USDT</div>
+                        </Box>
+                        <Box style={{textAlign:'center',borderColor:`${C.accent}44`}}>
+                          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>TOTAL VOLUME</div>
+                          <div style={{...mono,fontSize:22,fontWeight:700,color:C.accent}}>{totalVol.toFixed(2)} USDT</div>
+                        </Box>
+                      </div>
+                    );
+                  })()}
+
+                  {adminWithdrawals.length===0&&!adminWLoading&&(
+                    <Box style={{textAlign:'center',padding:32,borderStyle:'dashed'}}>
+                      <div style={{fontSize:28,marginBottom:8}}>💰</div>
+                      <div style={{color:C.muted}}>Tap Load to see all fee records</div>
+                    </Box>
+                  )}
+
+                  {adminWithdrawals.map((w,i)=>(
+                    <Box key={w.id||i} style={{marginBottom:8}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:6}}>
+                        <div>
+                          <div style={{...mono,fontSize:11,color:C.muted,marginBottom:3}}>{w.fromEmail||'—'}</div>
+                          <div style={{fontSize:12,color:C.text}}>
+                            {w.amount?.toFixed(2)} USDT withdrawal · <span style={{color:C.red}}>Fee: {w.fee?.toFixed(4)} USDT ({w.feeRate})</span>
+                          </div>
+                          <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                            {w.timestamp?.toDate?.()?.toLocaleString()||'—'}
+                          </div>
+                        </div>
+                        <div style={{...mono,fontSize:15,fontWeight:700,color:C.green}}>+{w.fee?.toFixed(4)} USDT</div>
+                      </div>
+                    </Box>
+                  ))}
+                </div>
+              )}
+
+              {/* ── WITHDRAWALS TAB ── */}
+              {adminTab==='withdrawals'&&(
+                <div>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+                    <div style={{fontSize:14,color:C.text,fontWeight:700}}>User Withdrawal Requests</div>
+                    <Btn onClick={async()=>{
+                      setAdminWLoading(true);
+                      // Load all user withdrawals — fetch last 200 from all users (via collectionGroup)
+                      try{
+                        const snap=await db.collectionGroup('withdrawals').orderBy('timestamp','desc').limit(100).get();
+                        setAdminWithdrawals(snap.docs.map(d=>({id:d.id,userUid:d.ref.parent.parent.id,...d.data()})));
+                      }catch(e){setAdminMsg({text:'❌ Enable collectionGroup in Firestore rules.',ok:false});}
+                      setAdminWLoading(false);
+                    }} loading={adminWLoading} color={C.accent} small>↺ Load</Btn>
+                  </div>
+
+                  {adminWithdrawals.length===0&&!adminWLoading&&(
+                    <Box style={{textAlign:'center',padding:32,borderStyle:'dashed'}}>
+                      <div style={{fontSize:28,marginBottom:8}}>⊖</div>
+                      <div style={{color:C.muted,marginBottom:8}}>Tap Load to see withdrawal requests</div>
+                      <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>Note: Requires Firestore collectionGroup read rule for 'withdrawals'</div>
+                    </Box>
+                  )}
+
+                  {adminWithdrawals.map((w,i)=>{
+                    const statusColor = w.status==='approved'?C.green:w.status==='rejected'?C.red:C.gold;
+                    return(
+                      <Box key={w.id||i} style={{marginBottom:10,borderColor:`${statusColor}44`}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:8,marginBottom:10}}>
+                          <div style={{flex:1}}>
+                            <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:4,flexWrap:'wrap'}}>
+                              <Badge label={w.status?.toUpperCase()||'PENDING'} color={statusColor}/>
+                              <span style={{...mono,fontSize:13,color:C.text,fontWeight:700}}>{w.amount?.toFixed(2)} USDT</span>
+                              {w.fee&&<span style={{fontSize:12,color:C.red}}>Fee: {w.fee?.toFixed(4)} ({w.feeRate})</span>}
+                            </div>
+                            <div style={{...mono,fontSize:11,color:C.accent,wordBreak:'break-all',marginBottom:4}}>{w.address||'—'}</div>
+                            {w.net&&<div style={{fontSize:12,color:C.green}}>Net: {w.net?.toFixed(4)} USDT</div>}
+                            <div style={{fontSize:11,color:C.muted,marginTop:4}}>{w.timestamp?.toDate?.()?.toLocaleString()||'—'}</div>
+                          </div>
+                        </div>
+                        {w.status==='pending'&&(
+                          <div style={{display:'flex',gap:8}}>
+                            <Btn onClick={()=>updateWithdrawalStatus(w.userUid,w.id,'approved')} color={C.green} small style={{flex:1}}>✅ Approve</Btn>
+                            <Btn onClick={()=>updateWithdrawalStatus(w.userUid,w.id,'rejected')} color={C.red} danger small style={{flex:1}}>✕ Reject</Btn>
+                          </div>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* ── GUIDE TAB ── */}
+              {adminTab==='guide'&&(
+                <Box style={{borderColor:`${C.gold}33`}}>
+                  <h3 style={{...orb,fontSize:12,color:C.gold,margin:'0 0 10px',letterSpacing:1}}>★ ADMIN QUICK GUIDE</h3>
+                  {[
+                    {icon:'1️⃣',text:'Users tab → "Load Users" → see all registered accounts'},
+                    {icon:'2️⃣',text:'When a user pays M-Pesa — search their email → Manage → select plan + duration → Activate'},
+                    {icon:'3️⃣',text:'Plan is activated instantly and the user\'s app updates in real-time'},
+                    {icon:'🎁',text:'Grant Free Trial: "Grant Trial" button gives user Pro for 30 days (once per account)'},
+                    {icon:'💰',text:'Fees tab: tracks all withdrawal charges (5–15%) auto-credited to your account'},
+                    {icon:'⊖',text:'Withdrawals tab: approve or reject user withdrawal requests'},
+                    {icon:'📊',text:'Stats row shows total users, pro/vip counts, estimated monthly revenue, expiring plans'},
+                    {icon:'⚠️',text:'Only YOU see this Admin tab — other users cannot access it'},
+                  ].map((s,i)=>(
+                    <div key={i} style={{display:'flex',gap:10,padding:'7px 0',
+                      borderBottom:i<7?`1px solid ${C.faint}`:'none',fontSize:13,color:C.muted}}>
+                      <span>{s.icon}</span><span>{s.text}</span>
+                    </div>
+                  ))}
+                </Box>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Tab Bar */}
+        <div style={{position:'fixed',bottom:0,left:0,right:0,zIndex:100,
+          background:`${C.surface}F8`,borderTop:`2px solid ${C.borderBright}`,
+          backdropFilter:'blur(16px)',display:'grid',
+          gridTemplateColumns:`repeat(${TABS.length},1fr)`,
+          paddingBottom:'env(safe-area-inset-bottom,0px)'}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)}
+              style={{background:tab===t.id?`${C.accent}12`:'transparent',border:'none',
+                borderTop:`3px solid ${tab===t.id?C.accent:'transparent'}`,
+                color:tab===t.id?C.accent:C.muted,padding:'7px 2px 9px',cursor:'pointer',
+                display:'flex',flexDirection:'column',alignItems:'center',gap:2,
+                transition:'all .18s',minWidth:0,overflow:'hidden'}}>
+              <span style={{fontSize:14,lineHeight:1}}>{t.icon}</span>
+              <span style={{fontSize:8,...font,fontWeight:tab===t.id?700:400,
+                whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',
+                width:'100%',textAlign:'center'}}>{t.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Withdraw PIN Modal */}
+        {pinModal&&(
+          <div style={{position:'fixed',inset:0,background:'#000000CC',zIndex:200,
+            display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+            onClick={e=>{if(e.target===e.currentTarget)setPinModal(false);}}>
+            <div style={{background:C.card,border:`2px solid ${C.red}55`,borderRadius:16,
+              padding:26,width:'100%',maxWidth:340,boxShadow:`0 0 40px ${C.red}22`}}>
+              <div style={{textAlign:'center',marginBottom:18}}>
+                <div style={{fontSize:34,marginBottom:6}}>🔐</div>
+                <h2 style={{...orb,fontSize:15,color:C.red,margin:'0 0 5px'}}>CONFIRM WITHDRAWAL</h2>
+                <p style={{fontSize:13,color:C.muted}}>Enter your 4-digit PIN to authorise</p>
+              </div>
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:13,color:C.muted,marginBottom:5}}>Withdraw PIN</div>
+                <Input value={pinInput} onChange={setPinInput} placeholder="••••" type="password"/>
+              </div>
+              {withAmt&&!isNaN(parseFloat(withAmt))&&(()=>{
+                const a=parseFloat(withAmt);
+                if(a>=20){
+                  const {rate,label}=getWithdrawFee(a);
+                  const fee=(a*rate).toFixed(4);
+                  const net=(a-parseFloat(fee)).toFixed(4);
+                  return(
+                    <div style={{marginBottom:10,background:`${C.red}10`,border:`1px solid ${C.red}33`,borderRadius:8,padding:'10px 12px',fontSize:12,lineHeight:1.8}}>
+                      <div style={{color:C.muted,marginBottom:3,fontSize:11}}>WITHDRAWAL SUMMARY</div>
+                      <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:C.muted}}>Gross amount:</span><span style={{color:C.text,...mono}}>{a} USDT</span></div>
+                      <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:C.muted}}>Fee ({label}):</span><span style={{color:C.red,...mono}}>− {fee} USDT</span></div>
+                      <div style={{display:'flex',justifyContent:'space-between',borderTop:`1px solid ${C.border}`,marginTop:3,paddingTop:3,fontWeight:700}}><span style={{color:C.green}}>Net payout:</span><span style={{color:C.green,...mono}}>{net} USDT</span></div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+              {pinMsgW&&<div style={{marginBottom:12}}><Msg text={pinMsgW} ok={false}/></div>}
+              <div style={{display:'flex',gap:9}}>
+                <Btn onClick={doWithdrawVerify} color={C.red} danger full>✓ Confirm</Btn>
+                <Btn onClick={()=>{setPinModal(false);setPinInput('');setPinMsgW('');}} color={C.muted}>Cancel</Btn>
+              </div>
+              <div style={{marginTop:12,fontSize:11,color:C.muted,textAlign:'center',lineHeight:1.6}}>
+                🔒 Withdrawals are irreversible. Double-check your address.
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  ReactDOM.render(<NexusTrader/>,document.getElementById('root'));
+</script>
+</body>
+</html>
